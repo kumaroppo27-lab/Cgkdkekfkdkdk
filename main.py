@@ -5,9 +5,8 @@ import time
 import requests
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
-from urllib.parse import parse_qs, unquote, quote, urlencode
+from urllib.parse import parse_qs, unquote, quote
 import base64
-import html
 
 app = Flask(__name__)
 CORS(app)
@@ -15,11 +14,12 @@ CORS(app)
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 TIMEOUT = 30
 
-class YouTubeAdvancedParser:
-    """Advanced YouTube parser with multiple extraction methods"""
+class YouTubeHTMLParser:
+    """Complete YouTube HTML Parser"""
     
     @staticmethod
     def extract_video_id(url):
+        """Extract video ID from URL"""
         patterns = [
             r'(?:youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})',
             r'(?:youtu\.be\/)([a-zA-Z0-9_-]{11})',
@@ -38,350 +38,308 @@ class YouTubeAdvancedParser:
         return None
     
     @staticmethod
-    def method1_get_player_response(video_id):
-        """Method 1: Extract from watch page"""
+    def fetch_youtube_html(video_id):
+        """Fetch YouTube page HTML"""
         try:
             url = f"https://www.youtube.com/watch?v={video_id}"
-            headers = {'User-Agent': USER_AGENT}
-            
-            response = requests.get(url, headers=headers, timeout=TIMEOUT)
-            if response.status_code != 200:
-                return None
-            
-            html_content = response.text
-            
-            # Pattern 1: ytInitialPlayerResponse
-            patterns = [
-                r'var ytInitialPlayerResponse\s*=\s*({.*?});',
-                r'ytInitialPlayerResponse\s*=\s*({.*?});',
-                r'window\["ytInitialPlayerResponse"\]\s*=\s*({.*?});'
-            ]
-            
-            for pattern in patterns:
-                match = re.search(pattern, html_content, re.DOTALL)
-                if match:
-                    try:
-                        json_str = match.group(1)
-                        # Clean JSON string
-                        json_str = json_str.replace('\\"', '"')
-                        json_str = json_str.replace('\\\\', '\\')
-                        json_str = json_str.replace('\n', '')
-                        json_str = json_str.replace('\r', '')
-                        
-                        data = json.loads(json_str)
-                        return data
-                    except:
-                        continue
-            
-            # Pattern 2: Look for player_response in script tags
-            script_pattern = r'<script[^>]*>.*?var ytInitialPlayerResponse\s*=\s*({.*?});.*?</script>'
-            match = re.search(script_pattern, html_content, re.DOTALL | re.IGNORECASE)
-            if match:
-                try:
-                    json_str = match.group(1)
-                    data = json.loads(json_str)
-                    return data
-                except:
-                    pass
-            
-            return None
-            
-        except Exception as e:
-            print(f"Method 1 error: {e}")
-            return None
-    
-    @staticmethod
-    def method2_get_embed_page(video_id):
-        """Method 2: Extract from embed page"""
-        try:
-            url = f"https://www.youtube.com/embed/{video_id}"
-            headers = {'User-Agent': USER_AGENT}
-            
-            response = requests.get(url, headers=headers, timeout=TIMEOUT)
-            if response.status_code != 200:
-                return None
-            
-            html_content = response.text
-            
-            # Look for player config in embed page
-            pattern = r'yt\.setConfig\(\s*{\s*\'PLAYER_CONFIG\'\s*:\s*({.*?})\s*}\s*\);'
-            match = re.search(pattern, html_content, re.DOTALL)
-            if match:
-                try:
-                    json_str = match.group(1).replace("'", '"')
-                    data = json.loads(json_str)
-                    return data
-                except:
-                    pass
-            
-            # Look for args in embed page
-            pattern = r'"args"\s*:\s*({[^}]+})'
-            match = re.search(pattern, html_content)
-            if match:
-                try:
-                    json_str = match.group(1)
-                    data = json.loads(json_str)
-                    return {'args': data}
-                except:
-                    pass
-            
-            return None
-            
-        except Exception as e:
-            print(f"Method 2 error: {e}")
-            return None
-    
-    @staticmethod
-    def method3_get_player_api(video_id):
-        """Method 3: Use YouTube player API"""
-        try:
-            # Try to get player API response
-            url = f"https://www.youtube.com/youtubei/v1/player"
             headers = {
                 'User-Agent': USER_AGENT,
-                'Content-Type': 'application/json',
-                'Accept': '*/*',
-                'Origin': 'https://www.youtube.com',
-                'Referer': f'https://www.youtube.com/watch?v={video_id}'
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
             }
-            
-            # YouTube's client payload
-            payload = {
-                "context": {
-                    "client": {
-                        "hl": "en",
-                        "clientName": "WEB",
-                        "clientVersion": "2.20231219.01.00",
-                        "platform": "DESKTOP"
-                    }
-                },
-                "videoId": video_id,
-                "playbackContext": {
-                    "contentPlaybackContext": {
-                        "html5Preference": "HTML5_PREF_WANTS"
-                    }
-                },
-                "contentCheckOk": True,
-                "racyCheckOk": True
-            }
-            
-            response = requests.post(url, headers=headers, json=payload, timeout=TIMEOUT)
-            if response.status_code == 200:
-                return response.json()
-            
-            return None
-            
-        except Exception as e:
-            print(f"Method 3 error: {e}")
-            return None
-    
-    @staticmethod
-    def method4_direct_pattern_search(video_id):
-        """Method 4: Direct pattern search in HTML"""
-        try:
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            headers = {'User-Agent': USER_AGENT}
             
             response = requests.get(url, headers=headers, timeout=TIMEOUT)
-            if response.status_code != 200:
-                return None
-            
-            html_content = response.text
-            
-            # Look for streaming URLs directly
-            patterns = [
-                r'"url":"(https://[^"]*googlevideo\.com[^"]*videoplayback[^"]*)"',
-                r'src="(https://[^"]*googlevideo\.com[^"]*videoplayback[^"]*)"',
-                r'"(https://rr[^"]*googlevideo\.com[^"]*videoplayback[^"]*)"'
-            ]
-            
-            for pattern in patterns:
-                matches = re.findall(pattern, html_content)
-                for match in matches:
-                    url = match.replace('\\/', '/').replace('\\u0026', '&')
-                    if 'itag=' in url and 'key=' in url:
-                        return {'direct_url': url}
-            
-            return None
-            
-        except Exception as e:
-            print(f"Method 4 error: {e}")
+            return response.text if response.status_code == 200 else None
+        except:
             return None
     
     @staticmethod
-    def get_player_response(video_id):
-        """Try all methods to get player response"""
-        methods = [
-            YouTubeAdvancedParser.method1_get_player_response,
-            YouTubeAdvancedParser.method3_get_player_api,
-            YouTubeAdvancedParser.method2_get_embed_page,
-            YouTubeAdvancedParser.method4_direct_pattern_search
+    def parse_video_info(html):
+        """Parse video information from HTML"""
+        info = {
+            'title': 'Unknown Title',
+            'author': 'Unknown Channel',
+            'description': '',
+            'duration': '0:00',
+            'views': '0',
+            'publish_date': '',
+            'likes': '0',
+            'keywords': [],
+            'category': '',
+            'thumbnails': {}
+        }
+        
+        try:
+            # Extract title
+            title_match = re.search(r'<meta name="title" content="([^"]+)"', html)
+            if title_match:
+                info['title'] = title_match.group(1)
+            
+            # Extract channel name
+            channel_match = re.search(r'"author":"([^"]+)"', html)
+            if channel_match:
+                info['author'] = channel_match.group(1)
+            
+            # Extract description
+            desc_match = re.search(r'"shortDescription":"([^"]*?)"', html)
+            if desc_match:
+                info['description'] = desc_match.group(1).replace('\\n', '\n')
+            
+            # Extract duration
+            duration_match = re.search(r'"approxDurationMs":"(\d+)"', html)
+            if duration_match:
+                seconds = int(duration_match.group(1)) // 1000
+                minutes = seconds // 60
+                seconds = seconds % 60
+                info['duration'] = f"{minutes}:{seconds:02d}"
+            
+            # Extract views
+            views_match = re.search(r'"viewCount":"(\d+)"', html)
+            if views_match:
+                views = int(views_match.group(1))
+                if views >= 1000000:
+                    info['views'] = f"{views/1000000:.1f}M"
+                elif views >= 1000:
+                    info['views'] = f"{views/1000:.1f}K"
+                else:
+                    info['views'] = str(views)
+            
+            # Extract publish date
+            date_match = re.search(r'"publishDate":"([^"]+)"', html)
+            if date_match:
+                info['publish_date'] = date_match.group(1)
+            
+            # Extract likes
+            likes_match = re.search(r'"likeCount":"(\d+)"', html)
+            if likes_match:
+                info['likes'] = likes_match.group(1)
+            
+            # Extract keywords
+            keywords_match = re.search(r'"keywords":\[(.*?)\]', html)
+            if keywords_match:
+                keywords_str = keywords_match.group(1)
+                keywords = re.findall(r'"([^"]+)"', keywords_str)
+                info['keywords'] = keywords
+            
+            # Extract category
+            category_match = re.search(r'"category":"([^"]+)"', html)
+            if category_match:
+                info['category'] = category_match.group(1)
+            
+            return info
+            
+        except Exception as e:
+            print(f"Error parsing video info: {e}")
+            return info
+    
+    @staticmethod
+    def extract_player_response(html):
+        """Extract player response from HTML"""
+        patterns = [
+            r'var ytInitialPlayerResponse\s*=\s*({.*?});',
+            r'ytInitialPlayerResponse\s*=\s*({.*?});',
+            r'window\["ytInitialPlayerResponse"\]\s*=\s*({.*?});',
+            r'ytInitialPlayerResponse\s*=\s*({.*?})\s*</script>',
+            r'player_response":"({.*?})"'
         ]
         
-        for method in methods:
-            result = method(video_id)
-            if result:
-                print(f"Success with method: {method.__name__}")
-                return result
+        for pattern in patterns:
+            match = re.search(pattern, html, re.DOTALL)
+            if match:
+                try:
+                    json_str = match.group(1)
+                    
+                    # Clean JSON string
+                    json_str = json_str.replace('\\"', '"')
+                    json_str = json_str.replace('\\\\', '\\')
+                    json_str = json_str.replace('\\n', '')
+                    json_str = json_str.replace('\\r', '')
+                    json_str = json_str.replace('\\t', '')
+                    
+                    # If it's base64 encoded in player_response pattern
+                    if 'player_response' in pattern:
+                        try:
+                            decoded = base64.b64decode(json_str).decode('utf-8')
+                            return json.loads(decoded)
+                        except:
+                            pass
+                    
+                    return json.loads(json_str)
+                except json.JSONDecodeError as e:
+                    print(f"JSON decode error: {e}")
+                    continue
+                except Exception as e:
+                    print(f"Error extracting player response: {e}")
+                    continue
         
         return None
     
     @staticmethod
-    def extract_streaming_data(player_response):
-        """Extract streaming data from player response"""
+    def extract_initial_data(html):
+        """Extract initial data from HTML"""
+        patterns = [
+            r'var ytInitialData\s*=\s*({.*?});',
+            r'ytInitialData\s*=\s*({.*?});',
+            r'window\["ytInitialData"\]\s*=\s*({.*?});'
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, html, re.DOTALL)
+            if match:
+                try:
+                    json_str = match.group(1)
+                    json_str = json_str.replace('\\"', '"')
+                    json_str = json_str.replace('\\\\', '\\')
+                    return json.loads(json_str)
+                except:
+                    continue
+        
+        return None
+    
+    @staticmethod
+    def extract_stream_urls(html):
+        """Extract streaming URLs directly from HTML"""
+        urls = []
+        
+        # Pattern 1: Direct googlevideo URLs
+        patterns = [
+            r'"url":"(https://[^"]*googlevideo\.com[^"]*videoplayback[^"]*)"',
+            r'src="(https://[^"]*googlevideo\.com[^"]*videoplayback[^"]*)"',
+            r'"(https://rr[^"]*googlevideo\.com[^"]*videoplayback[^"]*)"',
+            r'\\"url\\":\\"(https://[^"]*googlevideo\.com[^"]*videoplayback[^"]*)\\"'
+        ]
+        
+        for pattern in patterns:
+            matches = re.findall(pattern, html)
+            for match in matches:
+                url = match.replace('\\/', '/').replace('\\u0026', '&').replace('\\\\"', '"')
+                if 'googlevideo.com' in url and 'videoplayback' in url:
+                    urls.append(url)
+        
+        # Remove duplicates
+        unique_urls = []
+        seen = set()
+        for url in urls:
+            if url not in seen:
+                seen.add(url)
+                unique_urls.append(url)
+        
+        return unique_urls
+    
+    @staticmethod
+    def parse_streaming_formats(player_response):
+        """Parse streaming formats from player response"""
+        formats = []
+        
+        if not player_response:
+            return formats
+        
         try:
-            if not player_response:
-                return []
-            
-            # Different response structures
-            streaming_data = None
-            
-            # Structure 1: Direct streamingData
-            if 'streamingData' in player_response:
-                streaming_data = player_response['streamingData']
-            
-            # Structure 2: In videoDetails
-            elif 'videoDetails' in player_response and 'streamingData' in player_response['videoDetails']:
-                streaming_data = player_response['videoDetails']['streamingData']
-            
-            # Structure 3: In args (old method)
-            elif 'args' in player_response and 'url_encoded_fmt_stream_map' in player_response['args']:
-                return YouTubeAdvancedParser.parse_old_format(player_response['args'])
-            
-            # Structure 4: Direct URL
-            elif 'direct_url' in player_response:
-                return [{
-                    'url': player_response['direct_url'],
-                    'quality': 'Unknown',
-                    'type': 'video/mp4',
-                    'itag': 'unknown'
-                }]
-            
-            if not streaming_data:
-                return []
-            
-            formats = []
+            streaming_data = player_response.get('streamingData', {})
             
             # Parse adaptive formats
-            if 'adaptiveFormats' in streaming_data:
-                for fmt in streaming_data['adaptiveFormats']:
-                    if 'url' in fmt:
-                        formats.append(YouTubeAdvancedParser.parse_format(fmt))
-                    elif 'signatureCipher' in fmt:
-                        url = YouTubeAdvancedParser.decode_signature_cipher(fmt['signatureCipher'])
-                        if url:
-                            fmt['url'] = url
-                            formats.append(YouTubeAdvancedParser.parse_format(fmt))
+            adaptive_formats = streaming_data.get('adaptiveFormats', [])
+            for fmt in adaptive_formats:
+                format_info = YouTubeHTMLParser.parse_individual_format(fmt)
+                if format_info:
+                    formats.append(format_info)
             
             # Parse progressive formats
-            if 'formats' in streaming_data:
-                for fmt in streaming_data['formats']:
-                    if 'url' in fmt:
-                        formats.append(YouTubeAdvancedParser.parse_format(fmt))
-                    elif 'signatureCipher' in fmt:
-                        url = YouTubeAdvancedParser.decode_signature_cipher(fmt['signatureCipher'])
-                        if url:
-                            fmt['url'] = url
-                            formats.append(YouTubeAdvancedParser.parse_format(fmt))
-            
-            return formats
+            progressive_formats = streaming_data.get('formats', [])
+            for fmt in progressive_formats:
+                format_info = YouTubeHTMLParser.parse_individual_format(fmt)
+                if format_info:
+                    formats.append(format_info)
             
         except Exception as e:
-            print(f"Error extracting streaming data: {e}")
-            return []
+            print(f"Error parsing streaming formats: {e}")
+        
+        return formats
     
     @staticmethod
-    def parse_format(fmt):
-        """Parse individual format"""
-        quality = fmt.get('qualityLabel', '')
-        if not quality:
-            if 'height' in fmt:
-                quality = f"{fmt['height']}p"
-            elif 'bitrate' in fmt:
-                quality = f"{fmt['bitrate'] // 1000}kbps"
-            else:
-                quality = "Unknown"
-        
-        # Determine if it's audio or video
-        mime_type = fmt.get('mimeType', '')
-        is_audio = 'audio' in mime_type.lower()
-        is_video = 'video' in mime_type.lower() or 'mp4' in mime_type.lower()
-        
-        # Get file size
-        size = fmt.get('contentLength', '0')
-        if size and size != '0':
-            try:
-                size_int = int(size)
-                if size_int > 1024*1024:
-                    size_str = f"{size_int/(1024*1024):.1f} MB"
-                elif size_int > 1024:
-                    size_str = f"{size_int/1024:.1f} KB"
-                else:
-                    size_str = f"{size_int} B"
-            except:
-                size_str = "Unknown"
-        else:
-            size_str = "Unknown"
-        
-        return {
-            'itag': str(fmt.get('itag', '')),
-            'quality': quality,
-            'type': mime_type,
-            'url': fmt.get('url', ''),
-            'has_video': is_video,
-            'has_audio': is_audio or (is_video and not is_audio),  # Progressive has both
-            'size': size_str,
-            'fps': fmt.get('fps', '')
-        }
-    
-    @staticmethod
-    def parse_old_format(args):
-        """Parse old format URL encoded stream map"""
+    def parse_individual_format(fmt):
+        """Parse individual format object"""
         try:
-            stream_map = args.get('url_encoded_fmt_stream_map', '')
-            if not stream_map:
-                return []
+            # Get URL
+            url = fmt.get('url', '')
+            if not url and 'signatureCipher' in fmt:
+                url = YouTubeHTMLParser.decode_cipher(fmt['signatureCipher'])
             
-            formats = []
-            streams = stream_map.split(',')
+            if not url:
+                return None
             
-            for stream in streams:
-                params = {}
-                for param in stream.split('&'):
-                    if '=' in param:
-                        key, value = param.split('=', 1)
-                        params[key] = unquote(value)
-                
-                if 'url' in params:
-                    quality = params.get('quality', 'Unknown')
-                    itag = params.get('itag', '')
-                    
-                    # Add signature if present
-                    url = params['url']
-                    if 'sig' in params:
-                        url += f"&signature={params['sig']}"
-                    elif 's' in params:
-                        url += f"&signature={params['s']}"
-                    
-                    formats.append({
-                        'itag': itag,
-                        'quality': quality,
-                        'type': params.get('type', 'video/mp4'),
-                        'url': url,
-                        'has_video': True,
-                        'has_audio': 'audio' not in quality.lower(),
-                        'size': 'Unknown'
-                    })
+            # Get quality
+            quality = fmt.get('qualityLabel', '')
+            if not quality:
+                if 'height' in fmt:
+                    quality = f"{fmt['height']}p"
+                elif 'bitrate' in fmt:
+                    bitrate = fmt['bitrate']
+                    if bitrate > 1000:
+                        quality = f"{bitrate//1000}kbps"
+                    else:
+                        quality = f"{bitrate}bps"
+                else:
+                    quality = 'Unknown'
             
-            return formats
+            # Get type
+            mime_type = fmt.get('mimeType', 'video/mp4')
+            
+            # Determine if audio/video
+            is_audio = 'audio' in mime_type.lower()
+            is_video = 'video' in mime_type.lower() or 'mp4' in mime_type.lower()
+            
+            # Get size
+            size_bytes = fmt.get('contentLength', 0)
+            if size_bytes:
+                try:
+                    size_int = int(size_bytes)
+                    if size_int >= 1024*1024*1024:
+                        size = f"{size_int/(1024*1024*1024):.1f} GB"
+                    elif size_int >= 1024*1024:
+                        size = f"{size_int/(1024*1024):.1f} MB"
+                    elif size_int >= 1024:
+                        size = f"{size_int/1024:.1f} KB"
+                    else:
+                        size = f"{size_int} B"
+                except:
+                    size = "Unknown"
+            else:
+                size = "Unknown"
+            
+            # Get fps
+            fps = fmt.get('fps', 0)
+            
+            # Get codec
+            codec = 'Unknown'
+            if 'codecs' in fmt:
+                codec = fmt['codecs']
+            elif 'audioQuality' in fmt:
+                codec = fmt['audioQuality']
+            
+            return {
+                'itag': fmt.get('itag', ''),
+                'quality': quality,
+                'type': mime_type,
+                'url': url,
+                'has_video': is_video,
+                'has_audio': is_audio or (is_video and not is_audio),
+                'size': size,
+                'fps': fps,
+                'codec': codec,
+                'bitrate': fmt.get('bitrate', 0)
+            }
             
         except Exception as e:
-            print(f"Error parsing old format: {e}")
-            return []
+            print(f"Error parsing individual format: {e}")
+            return None
     
     @staticmethod
-    def decode_signature_cipher(cipher):
-        """Decode signatureCipher to get URL"""
+    def decode_cipher(cipher):
+        """Decode signatureCipher"""
         try:
             params = {}
             for param in cipher.split('&'):
@@ -393,13 +351,12 @@ class YouTubeAdvancedParser:
             if not url:
                 return None
             
-            # Add signature parameters
+            # Add signature if present
             sp = params.get('sp', 'signature')
             s = params.get('s', '')
             
             if s:
-                # For now, just append the signature
-                # In production, you might need to decode/transform it
+                # Simple signature appending
                 url += f"&{sp}={s}"
             
             return url
@@ -408,190 +365,330 @@ class YouTubeAdvancedParser:
             return None
     
     @staticmethod
-    def get_video_info(video_id):
-        """Get video information"""
+    def get_thumbnails(video_id, initial_data):
+        """Extract thumbnails"""
+        thumbnails = {
+            'default': f"https://i.ytimg.com/vi/{video_id}/default.jpg",
+            'medium': f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",
+            'high': f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+            'standard': f"https://i.ytimg.com/vi/{video_id}/sddefault.jpg",
+            'maxres': f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+        }
+        
+        # Try to get from initial data
+        if initial_data:
+            try:
+                video_details = YouTubeHTMLParser.find_key(initial_data, 'videoDetails')
+                if video_details and 'thumbnail' in video_details:
+                    thumb_data = video_details['thumbnail']['thumbnails']
+                    for thumb in thumb_data:
+                        width = thumb.get('width', 0)
+                        height = thumb.get('height', 0)
+                        url = thumb.get('url', '')
+                        
+                        if width >= 1280 and height >= 720:
+                            thumbnails['maxres'] = url
+                        elif width >= 640 and height >= 480:
+                            thumbnails['standard'] = url
+                        elif width >= 480 and height >= 360:
+                            thumbnails['high'] = url
+                        elif width >= 320 and height >= 180:
+                            thumbnails['medium'] = url
+                        else:
+                            thumbnails['default'] = url
+            except:
+                pass
+        
+        return thumbnails
+    
+    @staticmethod
+    def find_key(obj, key):
+        """Find key in nested dictionary"""
+        if isinstance(obj, dict):
+            if key in obj:
+                return obj[key]
+            for k, v in obj.items():
+                result = YouTubeHTMLParser.find_key(v, key)
+                if result:
+                    return result
+        elif isinstance(obj, list):
+            for item in obj:
+                result = YouTubeHTMLParser.find_key(item, key)
+                if result:
+                    return result
+        return None
+    
+    @staticmethod
+    def get_comments(initial_data, limit=20):
+        """Extract comments"""
+        comments = []
+        
+        if not initial_data:
+            return comments
+        
         try:
-            # Try oEmbed first
-            oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-            headers = {'User-Agent': USER_AGENT}
-            
-            response = requests.get(oembed_url, headers=headers, timeout=TIMEOUT)
-            
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    "title": data.get("title", ""),
-                    "author": data.get("author_name", ""),
-                    "thumbnail": data.get("thumbnail_url", ""),
-                    "success": True
-                }
+            # Navigate to comments section
+            continuation_items = YouTubeHTMLParser.find_key(initial_data, 'continuationItems')
+            if continuation_items:
+                for item in continuation_items:
+                    if 'commentThreadRenderer' in item:
+                        comment_renderer = item['commentThreadRenderer']
+                        comment = comment_renderer.get('comment', {})
+                        comment_renderer = comment.get('commentRenderer', {})
+                        
+                        author = comment_renderer.get('authorText', {}).get('simpleText', '')
+                        content = comment_renderer.get('contentText', {}).get('simpleText', '')
+                        
+                        if author and content:
+                            comments.append({
+                                'author': author,
+                                'content': content,
+                                'likes': comment_renderer.get('likeCount', 0),
+                                'time': comment_renderer.get('publishedTimeText', {}).get('simpleText', '')
+                            })
+                            
+                            if len(comments) >= limit:
+                                break
+        
         except:
             pass
         
-        # Fallback: Scrape from page
+        return comments
+    
+    @staticmethod
+    def get_related_videos(initial_data, limit=10):
+        """Extract related videos"""
+        related = []
+        
+        if not initial_data:
+            return related
+        
         try:
-            url = f"https://www.youtube.com/watch?v={video_id}"
-            headers = {'User-Agent': USER_AGENT}
-            
-            response = requests.get(url, headers=headers, timeout=TIMEOUT)
-            
-            if response.status_code == 200:
-                html_content = response.text
+            # Find related videos
+            secondary_results = YouTubeHTMLParser.find_key(initial_data, 'secondaryResults')
+            if secondary_results and 'secondaryResults' in secondary_results:
+                results = secondary_results['secondaryResults'].get('results', [])
                 
-                # Extract title
-                title = "Unknown Title"
-                title_match = re.search(r'<meta name="title" content="([^"]+)"', html_content)
-                if title_match:
-                    title = title_match.group(1)
-                
-                # Extract channel
-                channel = "Unknown Channel"
-                channel_match = re.search(r'"author":"([^"]+)"', html_content)
-                if channel_match:
-                    channel = channel_match.group(1)
-                
-                return {
-                    "title": title,
-                    "author": channel,
-                    "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
-                    "success": True
-                }
+                for item in results:
+                    if 'compactVideoRenderer' in item:
+                        video = item['compactVideoRenderer']
+                        video_id = video.get('videoId', '')
+                        title = video.get('title', {}).get('simpleText', '')
+                        author = video.get('longBylineText', {}).get('simpleText', '')
+                        
+                        if video_id and title:
+                            related.append({
+                                'video_id': video_id,
+                                'title': title,
+                                'author': author,
+                                'views': video.get('viewCountText', {}).get('simpleText', ''),
+                                'duration': video.get('lengthText', {}).get('simpleText', ''),
+                                'thumbnail': f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+                            })
+                            
+                            if len(related) >= limit:
+                                break
+        
         except:
             pass
         
-        return {"title": "", "author": "", "thumbnail": "", "success": False}
+        return related
 
 # ==================== ROUTES ====================
 
 @app.route('/')
 def home():
     return jsonify({
-        "api": "YouTube Advanced Parser",
-        "version": "2.0",
-        "methods": "4 different extraction methods",
+        "api": "YouTube HTML Parser API",
+        "version": "1.0",
+        "description": "Complete YouTube HTML parsing and downloading",
         "endpoints": {
-            "/extract?url=YOUTUBE_URL": "Extract video links",
-            "/download/VIDEO_ID?itag=ITAG": "Download video",
-            "/play/VIDEO_ID?itag=ITAG": "Play/stream video",
-            "/test/VIDEO_ID": "Test extraction",
+            "/parse?url=YOUTUBE_URL": "Parse complete video information",
+            "/download?url=YOUTUBE_URL&itag=ITAG": "Download video",
+            "/stream?url=YOUTUBE_URL&itag=ITAG": "Stream video",
+            "/thumbnails?url=YOUTUBE_URL": "Get thumbnails",
+            "/comments?url=YOUTUBE_URL": "Get comments",
+            "/related?url=YOUTUBE_URL": "Get related videos",
+            "/raw-html?url=YOUTUBE_URL": "Get raw HTML (debug)",
             "/health": "Health check"
-        },
-        "note": "Direct YouTube parsing without external APIs"
+        }
     })
 
-@app.route('/extract')
-def extract():
-    """Extract video links"""
+@app.route('/parse')
+def parse_video():
+    """Parse complete video information"""
     url = request.args.get('url', '')
+    get_comments = request.args.get('comments', 'false').lower() == 'true'
+    get_related = request.args.get('related', 'true').lower() == 'true'
     
     if not url:
         return jsonify({"error": "URL parameter is required"}), 400
     
-    video_id = YouTubeAdvancedParser.extract_video_id(url)
+    video_id = YouTubeHTMLParser.extract_video_id(url)
     if not video_id:
         return jsonify({"error": "Invalid YouTube URL"}), 400
     
-    # Get video info
-    info = YouTubeAdvancedParser.get_video_info(video_id)
+    # Fetch HTML
+    html = YouTubeHTMLParser.fetch_youtube_html(video_id)
+    if not html:
+        return jsonify({"error": "Could not fetch YouTube page"}), 500
     
-    # Get player response using multiple methods
-    player_response = YouTubeAdvancedParser.get_player_response(video_id)
+    # Parse video info
+    video_info = YouTubeHTMLParser.parse_video_info(html)
     
-    if not player_response:
-        return jsonify({
-            "success": False,
-            "error": "Could not extract video data",
-            "video_id": video_id,
-            "methods_tried": 4,
-            "note": "YouTube might have changed their structure"
-        }), 500
+    # Extract player response
+    player_response = YouTubeHTMLParser.extract_player_response(html)
     
-    # Extract streaming formats
-    formats = YouTubeAdvancedParser.extract_streaming_data(player_response)
+    # Extract initial data
+    initial_data = YouTubeHTMLParser.extract_initial_data(html)
     
-    # Filter only valid formats with URLs
-    valid_formats = []
-    for fmt in formats:
-        if fmt.get('url'):
-            # Add download endpoint
-            fmt['download_url'] = f"/download/{video_id}?itag={fmt['itag']}"
-            fmt['play_url'] = f"/play/{video_id}?itag={fmt['itag']}"
-            valid_formats.append(fmt)
+    # Get thumbnails
+    thumbnails = YouTubeHTMLParser.get_thumbnails(video_id, initial_data)
     
-    # Group by type
-    video_formats = [f for f in valid_formats if f['has_video'] and f['has_audio']]
-    audio_only = [f for f in valid_formats if f['has_audio'] and not f['has_video']]
-    video_only = [f for f in valid_formats if f['has_video'] and not f['has_audio']]
+    # Get streaming formats
+    formats = []
+    if player_response:
+        formats = YouTubeHTMLParser.parse_streaming_formats(player_response)
     
-    return jsonify({
+    # Also try direct URL extraction
+    direct_urls = YouTubeHTMLParser.extract_stream_urls(html)
+    
+    # Get comments if requested
+    comments = []
+    if get_comments and initial_data:
+        comments = YouTubeHTMLParser.get_comments(initial_data, limit=20)
+    
+    # Get related videos if requested
+    related_videos = []
+    if get_related and initial_data:
+        related_videos = YouTubeHTMLParser.get_related_videos(initial_data, limit=10)
+    
+    # Prepare response
+    response = {
         "success": True,
         "video_id": video_id,
-        "title": info.get("title", ""),
-        "author": info.get("author", ""),
-        "thumbnail": info.get("thumbnail", ""),
+        "info": video_info,
+        "thumbnails": thumbnails,
         "formats": {
-            "video_with_audio": video_formats,
-            "audio_only": audio_only,
-            "video_only": video_only
+            "total": len(formats),
+            "list": formats[:20],  # Limit to first 20
+            "direct_urls_count": len(direct_urls)
         },
-        "counts": {
-            "total": len(valid_formats),
-            "video_with_audio": len(video_formats),
-            "audio_only": len(audio_only),
-            "video_only": len(video_only)
-        },
-        "timestamp": time.time(),
-        "note": "Use download_url or play_url to access the content"
-    })
+        "metadata": {
+            "html_length": len(html),
+            "has_player_response": bool(player_response),
+            "has_initial_data": bool(initial_data),
+            "parsing_time": time.time()
+        }
+    }
+    
+    if get_comments:
+        response["comments"] = {
+            "count": len(comments),
+            "list": comments
+        }
+    
+    if get_related:
+        response["related_videos"] = {
+            "count": len(related_videos),
+            "list": related_videos
+        }
+    
+    # Add download endpoints
+    if formats:
+        response["download_endpoints"] = []
+        for fmt in formats[:5]:  # Add first 5 formats
+            if fmt.get('url'):
+                response["download_endpoints"].append({
+                    "quality": fmt['quality'],
+                    "itag": fmt['itag'],
+                    "download": f"/download?url=https://youtube.com/watch?v={video_id}&itag={fmt['itag']}",
+                    "stream": f"/stream?url=https://youtube.com/watch?v={video_id}&itag={fmt['itag']}"
+                })
+    
+    return jsonify(response)
 
-@app.route('/download/<video_id>')
-def download(video_id):
+@app.route('/download')
+def download_video():
     """Download video"""
+    url = request.args.get('url', '')
     itag = request.args.get('itag', '')
+    quality = request.args.get('quality', '')
     
-    if not itag:
-        return jsonify({"error": "itag parameter is required"}), 400
+    if not url:
+        return jsonify({"error": "URL parameter is required"}), 400
     
-    # Get player response
-    player_response = YouTubeAdvancedParser.get_player_response(video_id)
+    video_id = YouTubeHTMLParser.extract_video_id(url)
+    if not video_id:
+        return jsonify({"error": "Invalid YouTube URL"}), 400
+    
+    # Fetch HTML
+    html = YouTubeHTMLParser.fetch_youtube_html(video_id)
+    if not html:
+        return jsonify({"error": "Could not fetch video"}), 500
+    
+    # Extract player response
+    player_response = YouTubeHTMLParser.extract_player_response(html)
     if not player_response:
-        return jsonify({"error": "Could not get video data"}), 500
+        return jsonify({"error": "Could not extract video data"}), 500
     
-    # Extract formats and find the right one
-    formats = YouTubeAdvancedParser.extract_streaming_data(player_response)
+    # Parse formats
+    formats = YouTubeHTMLParser.parse_streaming_formats(player_response)
     
+    # Find the requested format
     target_format = None
-    for fmt in formats:
-        if str(fmt.get('itag', '')) == str(itag) and fmt.get('url'):
-            target_format = fmt
-            break
+    if itag:
+        for fmt in formats:
+            if str(fmt.get('itag', '')) == str(itag):
+                target_format = fmt
+                break
+    elif quality:
+        for fmt in formats:
+            if fmt.get('quality', '').lower() == quality.lower():
+                target_format = fmt
+                break
     
-    if not target_format:
-        return jsonify({"error": "Format not found or no URL available"}), 404
+    # If no specific format requested, use first available
+    if not target_format and formats:
+        # Try to find a progressive format first
+        for fmt in formats:
+            if fmt.get('has_video') and fmt.get('has_audio'):
+                target_format = fmt
+                break
+        
+        # Then any format
+        if not target_format:
+            target_format = formats[0]
     
-    url = target_format['url']
+    if not target_format or not target_format.get('url'):
+        return jsonify({
+            "error": "No suitable format found",
+            "available_formats": [{"itag": f.get('itag'), "quality": f.get('quality')} for f in formats]
+        }), 404
+    
+    download_url = target_format['url']
     
     try:
         # Get video info for filename
-        info = YouTubeAdvancedParser.get_video_info(video_id)
-        title = info.get('title', f'video_{video_id}')
+        video_info = YouTubeHTMLParser.parse_video_info(html)
+        title = video_info.get('title', f'video_{video_id}')
         
         # Clean filename
         filename = re.sub(r'[^\w\-_\. ]', '_', title[:50])
         
         # Add quality and extension
         if target_format['has_audio'] and not target_format['has_video']:
-            filename += f"_audio_{itag}.mp3"
+            filename += f"_audio_{target_format['quality']}.mp3"
             content_type = 'audio/mpeg'
         else:
-            filename += f"_{target_format.get('quality', 'video')}_{itag}.mp4"
+            filename += f"_{target_format['quality']}.mp4"
             content_type = target_format.get('type', 'video/mp4')
         
         # Stream the download
         headers = {'User-Agent': USER_AGENT}
         
         def generate():
-            with requests.get(url, headers=headers, stream=True, timeout=TIMEOUT) as r:
+            with requests.get(download_url, headers=headers, stream=True, timeout=TIMEOUT) as r:
                 r.raise_for_status()
                 for chunk in r.iter_content(chunk_size=8192):
                     yield chunk
@@ -600,58 +697,69 @@ def download(video_id):
             stream_with_context(generate()),
             headers={
                 'Content-Disposition': f'attachment; filename="{filename}"',
-                'Content-Type': content_type
+                'Content-Type': content_type,
+                'Content-Length': target_format.get('size', '')
             }
         )
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/play/<video_id>')
-def play(video_id):
-    """Play/stream video"""
+@app.route('/stream')
+def stream_video():
+    """Stream video"""
+    url = request.args.get('url', '')
     itag = request.args.get('itag', '')
     
-    # Get player response
-    player_response = YouTubeAdvancedParser.get_player_response(video_id)
+    if not url:
+        return jsonify({"error": "URL parameter is required"}), 400
+    
+    video_id = YouTubeHTMLParser.extract_video_id(url)
+    if not video_id:
+        return jsonify({"error": "Invalid YouTube URL"}), 400
+    
+    # Fetch HTML
+    html = YouTubeHTMLParser.fetch_youtube_html(video_id)
+    if not html:
+        return jsonify({"error": "Could not fetch video"}), 500
+    
+    # Extract player response
+    player_response = YouTubeHTMLParser.extract_player_response(html)
     if not player_response:
-        return jsonify({"error": "Could not get video data"}), 500
+        return jsonify({"error": "Could not extract video data"}), 500
     
-    # Extract formats
-    formats = YouTubeAdvancedParser.extract_streaming_data(player_response)
+    # Parse formats
+    formats = YouTubeHTMLParser.parse_streaming_formats(player_response)
     
-    # Find format
+    # Find the requested format
     target_format = None
     if itag:
         for fmt in formats:
-            if str(fmt.get('itag', '')) == str(itag) and fmt.get('url'):
+            if str(fmt.get('itag', '')) == str(itag):
                 target_format = fmt
                 break
     
-    # If no itag specified or not found, find a suitable format
-    if not target_format:
-        # Look for a progressive format first
+    # If no specific format requested, find a good default
+    if not target_format and formats:
+        # Look for progressive format (video+audio)
         for fmt in formats:
-            if fmt.get('has_video') and fmt.get('has_audio') and fmt.get('url'):
+            if fmt.get('has_video') and fmt.get('has_audio'):
                 target_format = fmt
                 break
         
         # Then look for any format
-        if not target_format and formats:
-            for fmt in formats:
-                if fmt.get('url'):
-                    target_format = fmt
-                    break
+        if not target_format:
+            target_format = formats[0]
     
     if not target_format or not target_format.get('url'):
-        return jsonify({"error": "No playable format found"}), 404
+        return jsonify({"error": "No streamable format found"}), 404
     
-    url = target_format['url']
+    stream_url = target_format['url']
     
     try:
         # Stream the video
         headers = {'User-Agent': USER_AGENT}
-        response = requests.get(url, headers=headers, stream=True, timeout=TIMEOUT)
+        response = requests.get(stream_url, headers=headers, stream=True, timeout=TIMEOUT)
         
         def generate():
             for chunk in response.iter_content(chunk_size=8192):
@@ -664,86 +772,142 @@ def play(video_id):
             content_type=content_type,
             headers={
                 'Cache-Control': 'no-cache',
-                'Accept-Ranges': 'bytes'
+                'Accept-Ranges': 'bytes',
+                'Content-Length': target_format.get('size', '')
             }
         )
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/test/<video_id>')
-def test(video_id):
-    """Test endpoint to see what's available"""
-    # Try all methods
-    method1 = YouTubeAdvancedParser.method1_get_player_response(video_id)
-    method2 = YouTubeAdvancedParser.method2_get_embed_page(video_id)
-    method3 = YouTubeAdvancedParser.method3_get_player_api(video_id)
-    method4 = YouTubeAdvancedParser.method4_direct_pattern_search(video_id)
+@app.route('/thumbnails')
+def get_thumbnails():
+    """Get video thumbnails"""
+    url = request.args.get('url', '')
     
-    # Get video info
-    info = YouTubeAdvancedParser.get_video_info(video_id)
+    if not url:
+        return jsonify({"error": "URL parameter is required"}), 400
     
-    # Try to extract formats from first successful method
-    player_response = None
-    successful_method = None
+    video_id = YouTubeHTMLParser.extract_video_id(url)
+    if not video_id:
+        return jsonify({"error": "Invalid YouTube URL"}), 400
     
-    if method1:
-        player_response = method1
-        successful_method = "method1_get_player_response"
-    elif method3:
-        player_response = method3
-        successful_method = "method3_get_player_api"
-    elif method2:
-        player_response = method2
-        successful_method = "method2_get_embed_page"
-    elif method4:
-        player_response = method4
-        successful_method = "method4_direct_pattern_search"
+    # Fetch HTML
+    html = YouTubeHTMLParser.fetch_youtube_html(video_id)
+    if not html:
+        return jsonify({"error": "Could not fetch video"}), 500
     
-    formats = []
-    if player_response:
-        formats = YouTubeAdvancedParser.extract_streaming_data(player_response)
+    # Extract initial data
+    initial_data = YouTubeHTMLParser.extract_initial_data(html)
+    
+    # Get thumbnails
+    thumbnails = YouTubeHTMLParser.get_thumbnails(video_id, initial_data)
     
     return jsonify({
+        "success": True,
         "video_id": video_id,
-        "title": info.get("title", ""),
-        "author": info.get("author", ""),
-        "methods": {
-            "method1": bool(method1),
-            "method2": bool(method2),
-            "method3": bool(method3),
-            "method4": bool(method4)
-        },
-        "successful_method": successful_method,
-        "formats_count": len(formats),
-        "has_formats_with_urls": any(f.get('url') for f in formats),
-        "available_formats": [f['quality'] for f in formats if f.get('url')],
-        "sample_format": formats[0] if formats else None,
-        "timestamp": time.time()
+        "thumbnails": thumbnails
     })
+
+@app.route('/comments')
+def get_comments():
+    """Get video comments"""
+    url = request.args.get('url', '')
+    limit = int(request.args.get('limit', 20))
+    
+    if not url:
+        return jsonify({"error": "URL parameter is required"}), 400
+    
+    video_id = YouTubeHTMLParser.extract_video_id(url)
+    if not video_id:
+        return jsonify({"error": "Invalid YouTube URL"}), 400
+    
+    # Fetch HTML
+    html = YouTubeHTMLParser.fetch_youtube_html(video_id)
+    if not html:
+        return jsonify({"error": "Could not fetch video"}), 500
+    
+    # Extract initial data
+    initial_data = YouTubeHTMLParser.extract_initial_data(html)
+    
+    # Get comments
+    comments = YouTubeHTMLParser.get_comments(initial_data, limit)
+    
+    return jsonify({
+        "success": True,
+        "video_id": video_id,
+        "comments": {
+            "count": len(comments),
+            "list": comments
+        }
+    })
+
+@app.route('/related')
+def get_related():
+    """Get related videos"""
+    url = request.args.get('url', '')
+    limit = int(request.args.get('limit', 10))
+    
+    if not url:
+        return jsonify({"error": "URL parameter is required"}), 400
+    
+    video_id = YouTubeHTMLParser.extract_video_id(url)
+    if not video_id:
+        return jsonify({"error": "Invalid YouTube URL"}), 400
+    
+    # Fetch HTML
+    html = YouTubeHTMLParser.fetch_youtube_html(video_id)
+    if not html:
+        return jsonify({"error": "Could not fetch video"}), 500
+    
+    # Extract initial data
+    initial_data = YouTubeHTMLParser.extract_initial_data(html)
+    
+    # Get related videos
+    related = YouTubeHTMLParser.get_related_videos(initial_data, limit)
+    
+    return jsonify({
+        "success": True,
+        "video_id": video_id,
+        "related_videos": {
+            "count": len(related),
+            "list": related
+        }
+    })
+
+@app.route('/raw-html')
+def get_raw_html():
+    """Get raw HTML (for debugging)"""
+    url = request.args.get('url', '')
+    
+    if not url:
+        return jsonify({"error": "URL parameter is required"}), 400
+    
+    video_id = YouTubeHTMLParser.extract_video_id(url)
+    if not video_id:
+        return jsonify({"error": "Invalid YouTube URL"}), 400
+    
+    # Fetch HTML
+    html = YouTubeHTMLParser.fetch_youtube_html(video_id)
+    if not html:
+        return jsonify({"error": "Could not fetch YouTube page"}), 500
+    
+    # Return first 5000 chars for debugging
+    return Response(
+        html[:5000],
+        content_type='text/plain',
+        headers={'Content-Disposition': f'inline; filename="{video_id}_html.txt"'}
+    )
 
 @app.route('/health')
 def health():
     return jsonify({
         "status": "healthy",
         "timestamp": time.time(),
-        "service": "YouTube Advanced Parser"
+        "service": "YouTube HTML Parser API"
     })
-
-# Error handlers
-@app.errorhandler(404)
-def not_found(e):
-    return jsonify({"error": "Endpoint not found"}), 404
-
-@app.errorhandler(500)
-def server_error(e):
-    return jsonify({"error": "Internal server error"}), 500
-
-@app.errorhandler(400)
-def bad_request(e):
-    return jsonify({"error": "Bad request"}), 400
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"Starting YouTube Advanced Parser on port {port}")
+    print(f"Starting YouTube HTML Parser API on port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
