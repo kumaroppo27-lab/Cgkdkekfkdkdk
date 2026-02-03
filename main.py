@@ -5,13 +5,12 @@ import time
 import requests
 import secrets
 import hashlib
-import hmac
-import base64
-from flask import Flask, request, jsonify, Response, stream_with_context, render_template_string
+from flask import Flask, request, jsonify, Response, stream_with_context, render_template_string, send_file
 from flask_cors import CORS
 from urllib.parse import parse_qs, unquote, quote, urlencode
-import struct
-import random
+import yt_dlp
+import tempfile
+import threading
 from datetime import datetime, timedelta
 
 app = Flask(__name__)
@@ -21,8 +20,8 @@ CORS(app)
 USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 TIMEOUT = 60
 
-class YouTubeTokenizedURLGenerator:
-    """Generate real YouTube tokenized URLs with signatures"""
+class YouTubeRealDownloader:
+    """Real YouTube downloader that generates actual googlevideo URLs"""
     
     @staticmethod
     def extract_video_id(url):
@@ -45,469 +44,1040 @@ class YouTubeTokenizedURLGenerator:
         return None
     
     @staticmethod
-    def fetch_video_data(video_id):
-        """Fetch video data using YouTube's internal API"""
-        url = "https://www.youtube.com/youtubei/v1/player"
-        
-        headers = {
-            'User-Agent': USER_AGENT,
-            'Content-Type': 'application/json',
-            'Accept': '*/*',
-            'Origin': 'https://www.youtube.com',
-            'Referer': f'https://www.youtube.com/watch?v={video_id}',
-            'X-YouTube-Client-Name': '1',
-            'X-YouTube-Client-Version': '2.20231219.01.00',
-            'X-YouTube-Device': 'desktop',
-            'X-YouTube-Page-CL': '400000000',
-            'X-YouTube-Page-Label': 'youtube.ytfe.desktop_20231219_1_RC0',
-            'X-YouTube-Utc-Offset': '330',
-            'X-YouTube-Time-Zone': 'Asia/Kolkata',
-            'X-YouTube-Ad-Signals': '',
-            'X-YouTube-Browser-Name': 'Chrome',
-            'X-YouTube-Browser-Version': '120.0.0.0'
-        }
-        
-        payload = {
-            "context": {
-                "client": {
-                    "hl": "en",
-                    "gl": "US",
-                    "remoteHost": "203.0.113.25",
-                    "deviceMake": "",
-                    "deviceModel": "",
-                    "visitorData": "CgtfVW9Qd2p4SlVZNCiMn6OQBg%3D%3D",
-                    "userAgent": USER_AGENT,
-                    "clientName": "WEB",
-                    "clientVersion": "2.20231219.01.00",
-                    "osName": "Windows",
-                    "osVersion": "10.0",
-                    "originalUrl": f"https://www.youtube.com/watch?v={video_id}",
-                    "screenPixelDensity": 1,
-                    "platform": "DESKTOP",
-                    "clientFormFactor": "UNKNOWN_FORM_FACTOR",
-                    "configInfo": {},
-                    "screenDensityFloat": 1.25,
-                    "utcOffsetMinutes": 330,
-                    "userInterfaceTheme": "USER_INTERFACE_THEME_DARK",
-                    "connectionType": "CONN_CELLULAR_4G",
-                    "memoryTotalKbytes": "8000000",
-                    "mainAppWebInfo": {
-                        "graftUrl": f"/watch?v={video_id}",
-                        "webDisplayMode": "WEB_DISPLAY_MODE_BROWSER",
-                        "isWebNativeShareAvailable": False
-                    },
-                    "timeZone": "Asia/Kolkata"
-                },
-                "user": {
-                    "lockedSafetyMode": False
-                },
-                "request": {
-                    "useSsl": True,
-                    "internalExperimentFlags": [],
-                    "consistencyTokenJars": []
-                },
-                "clickTracking": {
-                    "clickTrackingParams": "CAEQ6HsiEwiY8vTQgt6DAxV_1JgFHZvMA5Q="
-                },
-                "adSignalsInfo": {
-                    "params": []
-                }
-            },
-            "videoId": video_id,
-            "playbackContext": {
-                "contentPlaybackContext": {
-                    "vis": 0,
-                    "splay": False,
-                    "autoCaptionsDefaultOn": False,
-                    "autonavState": "STATE_NONE",
-                    "html5Preference": "HTML5_PREF_WANTS",
-                    "lactMilliseconds": "-1",
-                    "referer": f"https://www.youtube.com/watch?v={video_id}",
-                    "watchAmbientModeContext": {
-                        "hasShownAmbientMode": True
-                    }
-                }
-            },
-            "racyCheckOk": True,
-            "contentCheckOk": True,
-            "params": "CgIIAQ%3D%3D"
-        }
-        
+    def get_real_stream_url(video_id, format_id='best'):
+        """Get real streaming URL using yt-dlp"""
         try:
-            response = requests.post(url, headers=headers, json=payload, timeout=TIMEOUT)
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                print(f"API Error: {response.status_code}")
-                return None
-                
-        except Exception as e:
-            print(f"Request Error: {e}")
-            return None
-    
-    @staticmethod
-    def extract_streaming_info(player_data):
-        """Extract streaming information from player response"""
-        if not player_data:
-            return None
-        
-        streaming_data = player_data.get('streamingData', {})
-        video_details = player_data.get('videoDetails', {})
-        
-        return {
-            'streaming_data': streaming_data,
-            'video_details': video_details,
-            'playability_status': player_data.get('playabilityStatus', {})
-        }
-    
-    @staticmethod
-    def generate_tokenized_url(format_data, video_id, itag):
-        """Generate complete tokenized URL with all parameters"""
-        
-        # Extract base URL parameters from format
-        url = format_data.get('url', '')
-        signature_cipher = format_data.get('signatureCipher', '')
-        cipher = format_data.get('cipher', '')
-        
-        # Decode cipher if present
-        if not url and (signature_cipher or cipher):
-            url = YouTubeTokenizedURLGenerator.decode_cipher(signature_cipher or cipher)
-        
-        if not url:
-            return None
-        
-        # Parse existing URL parameters
-        parsed_url = url.split('?')
-        base_url = parsed_url[0]
-        existing_params = {}
-        
-        if len(parsed_url) > 1:
-            for param in parsed_url[1].split('&'):
-                if '=' in param:
-                    key, value = param.split('=', 1)
-                    existing_params[key] = unquote(value)
-        
-        # Generate new parameters
-        current_time = int(time.time())
-        
-        # Generate unique IDs
-        ei = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', k=16))
-        id_val = f"o-{''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', k=24))}"
-        
-        # Generate random IP (for demo purposes - in production, use actual IP)
-        ip_parts = [str(random.randint(1, 255)) for _ in range(4)]
-        ip = '.'.join(ip_parts)
-        
-        # Build parameter dictionary
-        params = {
-            'expire': str(current_time + 21600),  # 6 hours from now
-            'ei': ei,
-            'ip': ip,
-            'id': id_val,
-            'itag': str(itag),
-            'source': 'youtube',
-            'requiressl': 'yes',
-            'mh': random.choice(['AB', 'CD', 'EF', 'GH']),
-            'mm': '31,29',
-            'mn': f'sn-{random.choice(["8xgp1vo", "5hne6n7", "5ualz7l"])}-p5qe,sn-{random.choice(["8xgp1vo", "5hne6n7", "5ualz7l"])}-p5qs',
-            'ms': 'au,rdu',
-            'mv': 'm',
-            'mvi': str(random.randint(1, 9)),
-            'pl': '24',
-            'initcwndbps': str(random.randint(1000000, 5000000)),
-            'vprv': '1',
-            'mime': format_data.get('mimeType', 'video/mp4'),
-            'ns': ei[:8] + ei[8:],
-            'cnr': str(random.randint(10, 20)),
-            'ratebypass': 'yes',
-            'dur': str(random.randint(60, 600) + random.random()),
-            'lmt': str(int(time.time() * 1000000)),
-            'mt': str(current_time),
-            'fvip': str(random.randint(1, 5)),
-            'fexp': '24001373,24007246',
-            'c': 'WEB',
-            'txp': str(random.randint(1000000, 9999999)),
-            'sparams': 'expire,ei,ip,id,itag,source,requiressl,vprv,mime,ns,cnr,ratebypass,dur,lmt',
-            'lsparams': 'mh,mm,mn,ms,mv,mvi,pl,initcwndbps',
-            'lsig': 'AJfQdSswRQIhAL' + ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789', k=43))
-        }
-        
-        # Add format-specific parameters
-        if 'bitrate' in format_data:
-            params['bitrate'] = str(format_data['bitrate'])
-        
-        if 'clen' in format_data:
-            params['clen'] = str(format_data.get('contentLength', ''))
-        
-        if 'fps' in format_data:
-            params['fps'] = str(format_data['fps'])
-        
-        # Generate signature (simulated - real signature requires decryption)
-        signature = YouTubeTokenizedURLGenerator.generate_signature(format_data)
-        if signature:
-            params['sig'] = signature
-        
-        # Merge with existing params (existing params take precedence)
-        for key, value in existing_params.items():
-            if key not in ['expire', 'ei', 'ip', 'id', 'sig']:  # Don't overwrite critical params
-                params[key] = value
-        
-        # Build final URL
-        query_string = '&'.join([f"{key}={quote(str(value))}" for key, value in params.items()])
-        final_url = f"{base_url}?{query_string}"
-        
-        return {
-            'url': final_url,
-            'params': params,
-            'signature_present': 'sig' in params
-        }
-    
-    @staticmethod
-    def decode_cipher(cipher_str):
-        """Decode signatureCipher to get base URL"""
-        try:
-            params = {}
-            for param in cipher_str.split('&'):
-                if '=' in param:
-                    key, value = param.split('=', 1)
-                    params[key] = unquote(value)
-            
-            url = params.get('url', '')
-            if not url:
-                return None
-            
-            # Add s parameter as signature if present
-            s = params.get('s', '')
-            sp = params.get('sp', 'signature')
-            
-            if s:
-                url += f"&{sp}={s}"
-            
-            return url
-            
-        except Exception as e:
-            print(f"Error decoding cipher: {e}")
-            return None
-    
-    @staticmethod
-    def generate_signature(format_data):
-        """Generate signature for URL (simplified version)"""
-        # Note: Real YouTube signature generation requires decrypting the signature
-        # from the player JS. This is a simplified version for demonstration.
-        
-        # In reality, you would:
-        # 1. Extract the signature from format_data['s'] or format_data['signature']
-        # 2. Decrypt it using the player JS decryption function
-        # 3. Apply transformations based on the player JS code
-        
-        # For this demo, we'll generate a fake signature
-        chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-        signature = 'AJfQdSswRQIhA' + ''.join(random.choices(chars, k=43))
-        
-        return signature
-    
-    @staticmethod
-    def extract_formats_with_signatures(streaming_data):
-        """Extract formats with signature information"""
-        formats = []
-        
-        if not streaming_data:
-            return formats
-        
-        # Process formats
-        for fmt in streaming_data.get('formats', []):
-            format_info = YouTubeTokenizedURLGenerator.parse_format(fmt)
-            if format_info:
-                formats.append(format_info)
-        
-        # Process adaptive formats
-        for fmt in streaming_data.get('adaptiveFormats', []):
-            format_info = YouTubeTokenizedURLGenerator.parse_format(fmt)
-            if format_info:
-                formats.append(format_info)
-        
-        return formats
-    
-    @staticmethod
-    def parse_format(fmt):
-        """Parse individual format"""
-        try:
-            itag = fmt.get('itag', '')
-            mime_type = fmt.get('mimeType', '')
-            
-            # Check if signature is required
-            requires_signature = 'signatureCipher' in fmt or 'cipher' in fmt or 's' in fmt
-            
-            # Get quality
-            quality = fmt.get('qualityLabel', '')
-            if not quality and 'height' in fmt:
-                quality = f"{fmt['height']}p"
-            elif not quality and 'bitrate' in fmt:
-                quality = f"{fmt['bitrate']//1000}kbps"
-            else:
-                quality = 'Unknown'
-            
-            # Determine type
-            is_audio = 'audio' in mime_type.lower()
-            is_video = 'video' in mime_type.lower()
-            
-            # Get size
-            size_bytes = fmt.get('contentLength', 0)
-            if size_bytes:
-                try:
-                    size_int = int(size_bytes)
-                    if size_int >= 1024**3:
-                        size = f"{size_int/(1024**3):.1f} GB"
-                    elif size_int >= 1024**2:
-                        size = f"{size_int/(1024**2):.1f} MB"
-                    elif size_int >= 1024:
-                        size = f"{size_int/1024:.1f} KB"
-                    else:
-                        size = f"{size_int} B"
-                except:
-                    size = "Unknown"
-            else:
-                size = "Unknown"
-            
-            return {
-                'itag': str(itag),
-                'quality': quality,
-                'type': 'audio' if is_audio else 'video',
-                'mime_type': mime_type,
-                'requires_signature': requires_signature,
-                'signature_cipher': fmt.get('signatureCipher', ''),
-                'cipher': fmt.get('cipher', ''),
-                'url': fmt.get('url', ''),
-                'size': size,
-                'bitrate': fmt.get('bitrate', 0),
-                'width': fmt.get('width', 0),
-                'height': fmt.get('height', 0),
-                'fps': fmt.get('fps', 0),
-                'has_audio': is_audio or (is_video and not is_audio),
-                'has_video': is_video,
-                'is_progressive': is_video and is_audio
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'format': format_id,
+                'extract_flat': False,
             }
             
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+                
+                if info and 'url' in info:
+                    # This is the actual googlevideo.com URL
+                    return {
+                        'url': info['url'],
+                        'direct_url': info['url'],
+                        'format_id': format_id,
+                        'ext': info.get('ext', 'mp4'),
+                        'filesize': info.get('filesize', 0),
+                        'has_drm': False
+                    }
+                
+                # If direct URL not found, try to get from formats
+                if 'formats' in info:
+                    for fmt in info['formats']:
+                        if fmt.get('format_id') == format_id and 'url' in fmt:
+                            return {
+                                'url': fmt['url'],
+                                'direct_url': fmt['url'],
+                                'format_id': format_id,
+                                'ext': fmt.get('ext', 'mp4'),
+                                'filesize': fmt.get('filesize', 0),
+                                'has_drm': fmt.get('has_drm', False)
+                            }
+            
+            return None
+            
         except Exception as e:
-            print(f"Error parsing format: {e}")
+            print(f"Error getting stream URL: {e}")
             return None
     
     @staticmethod
     def get_video_info(video_id):
-        """Get video information"""
+        """Get comprehensive video information"""
         try:
-            oembed_url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
-            headers = {'User-Agent': USER_AGENT}
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'extract_flat': False,
+            }
             
-            response = requests.get(oembed_url, headers=headers, timeout=TIMEOUT)
-            
-            if response.status_code == 200:
-                data = response.json()
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+                
+                if not info:
+                    return None
+                
+                # Get all available formats
+                formats = []
+                if 'formats' in info:
+                    for fmt in info['formats']:
+                        if fmt.get('url'):
+                            format_info = YouTubeRealDownloader.parse_format(fmt)
+                            if format_info:
+                                formats.append(format_info)
+                
+                # Sort formats by quality
+                formats.sort(key=lambda x: (
+                    0 if x['type'] == 'video+audio' else (1 if x['type'] == 'video' else 2),
+                    -x.get('height', 0),
+                    -x.get('tbr', 0)
+                ))
+                
                 return {
-                    'title': data.get('title', ''),
-                    'author': data.get('author_name', ''),
-                    'thumbnail': data.get('thumbnail_url', ''),
-                    'success': True
+                    'video_id': video_id,
+                    'title': info.get('title', ''),
+                    'channel': info.get('channel', ''),
+                    'duration': info.get('duration_string', ''),
+                    'views': info.get('view_count', 0),
+                    'description': info.get('description', '')[:200] + '...' if info.get('description') else '',
+                    'thumbnail': info.get('thumbnail', f'https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg'),
+                    'formats': formats,
+                    'format_count': len(formats)
                 }
-        except:
-            pass
+                
+        except Exception as e:
+            print(f"Error getting video info: {e}")
+            return None
+    
+    @staticmethod
+    def parse_format(fmt):
+        """Parse format information"""
+        format_id = fmt.get('format_id', '')
+        format_note = fmt.get('format_note', '')
+        ext = fmt.get('ext', '')
+        filesize = fmt.get('filesize', fmt.get('filesize_approx', 0))
+        url = fmt.get('url', '')
+        
+        # Determine quality
+        if format_note:
+            quality = format_note
+        elif fmt.get('height'):
+            quality = f"{fmt['height']}p"
+        elif fmt.get('tbr'):
+            quality = f"{fmt['tbr']}kbps"
+        else:
+            quality = 'Unknown'
+        
+        # Determine type
+        has_video = fmt.get('vcodec') != 'none'
+        has_audio = fmt.get('acodec') != 'none'
+        
+        if has_video and has_audio:
+            format_type = 'video+audio'
+        elif has_video:
+            format_type = 'video'
+        else:
+            format_type = 'audio'
+        
+        # Format size
+        if filesize:
+            if filesize >= 1024**3:
+                size = f"{filesize/(1024**3):.1f} GB"
+            elif filesize >= 1024**2:
+                size = f"{filesize/(1024**2):.1f} MB"
+            elif filesize >= 1024:
+                size = f"{filesize/1024:.1f} KB"
+            else:
+                size = f"{filesize} B"
+        else:
+            size = "Unknown"
+        
+        # Check if it's a real googlevideo URL
+        is_googlevideo = 'googlevideo.com' in url if url else False
         
         return {
-            'title': f'Video {video_id}',
-            'author': 'Unknown',
-            'thumbnail': f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg',
-            'success': False
+            'format_id': format_id,
+            'quality': quality,
+            'type': format_type,
+            'extension': ext,
+            'size': size,
+            'has_video': has_video,
+            'has_audio': has_audio,
+            'fps': fmt.get('fps', 0),
+            'width': fmt.get('width', 0),
+            'height': fmt.get('height', 0),
+            'tbr': fmt.get('tbr', 0),
+            'vcodec': fmt.get('vcodec', ''),
+            'acodec': fmt.get('acodec', ''),
+            'url': url,
+            'is_googlevideo': is_googlevideo,
+            'has_drm': fmt.get('has_drm', False)
         }
+    
+    @staticmethod
+    def generate_download_token(video_id, format_id, quality):
+        """Generate a download token for tracking"""
+        token = secrets.token_urlsafe(32)
+        timestamp = int(time.time())
+        
+        return {
+            'token': token,
+            'video_id': video_id,
+            'format_id': format_id,
+            'quality': quality,
+            'created_at': timestamp,
+            'expires_at': timestamp + 3600,  # 1 hour
+            'status': 'pending'
+        }
+    
+    @staticmethod
+    def stream_video_directly(video_id, format_id):
+        """Stream video directly from googlevideo"""
+        stream_info = YouTubeRealDownloader.get_real_stream_url(video_id, format_id)
+        
+        if not stream_info or not stream_info.get('url'):
+            return None
+        
+        try:
+            # Stream with proper headers
+            headers = {
+                'User-Agent': USER_AGENT,
+                'Accept': '*/*',
+                'Accept-Encoding': 'identity',
+                'Range': 'bytes=0-',
+                'Referer': 'https://www.youtube.com/',
+                'Origin': 'https://www.youtube.com'
+            }
+            
+            response = requests.get(stream_info['url'], headers=headers, stream=True, timeout=TIMEOUT)
+            
+            def generate():
+                for chunk in response.iter_content(chunk_size=8192):
+                    yield chunk
+            
+            # Determine content type
+            content_type = 'video/mp4'
+            if stream_info['ext'] == 'webm':
+                content_type = 'video/webm'
+            elif 'audio' in format_id:
+                content_type = 'audio/mpeg'
+            
+            return Response(
+                stream_with_context(generate()),
+                content_type=content_type,
+                headers={
+                    'Accept-Ranges': 'bytes',
+                    'Content-Type': content_type,
+                    'Cache-Control': 'no-cache',
+                    'Content-Disposition': 'inline'
+                }
+            )
+            
+        except Exception as e:
+            print(f"Stream error: {e}")
+            return None
+
+# Store active downloads
+active_downloads = {}
 
 # ==================== HTML TEMPLATE ====================
 
-HTML_TEMPLATE = """
+HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YouTube Tokenized URL Generator</title>
+    <title>🎬 YouTube Video Downloader</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
-        .container { max-width: 1200px; margin: 0 auto; background: white; border-radius: 20px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); overflow: hidden; }
-        .header { background: linear-gradient(135deg, #ff0000 0%, #cc0000 100%); color: white; padding: 40px; text-align: center; }
-        .header h1 { font-size: 2.5rem; margin-bottom: 10px; }
-        .content { padding: 40px; }
-        .input-section { margin-bottom: 30px; }
-        .input-group { display: flex; gap: 10px; margin-bottom: 20px; }
-        input[type="text"] { flex: 1; padding: 15px 20px; border: 2px solid #e0e0e0; border-radius: 10px; font-size: 16px; }
-        input[type="text"]:focus { outline: none; border-color: #ff0000; }
-        button { background: linear-gradient(135deg, #ff0000 0%, #cc0000 100%); color: white; border: none; padding: 15px 30px; border-radius: 10px; font-size: 16px; font-weight: bold; cursor: pointer; }
-        button:hover { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(255,0,0,0.2); }
-        .result-section { display: none; margin-top: 30px; }
-        .video-info { background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px; }
-        .formats-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; margin: 20px 0; }
-        .format-card { background: white; border: 2px solid #e0e0e0; border-radius: 10px; padding: 20px; transition: all 0.3s; }
-        .format-card:hover { border-color: #ff0000; box-shadow: 0 5px 15px rgba(0,0,0,0.1); }
-        .format-quality { font-size: 1.2rem; font-weight: bold; color: #ff0000; margin-bottom: 10px; }
-        .format-details { color: #666; margin-bottom: 15px; }
-        .url-display { background: #f5f5f5; padding: 15px; border-radius: 5px; font-family: monospace; font-size: 0.9rem; word-break: break-all; margin: 10px 0; max-height: 150px; overflow-y: auto; }
-        .copy-btn { background: #4CAF50; color: white; border: none; padding: 8px 15px; border-radius: 5px; cursor: pointer; margin-top: 10px; }
-        .copy-btn:hover { background: #45a049; }
-        .loading { text-align: center; padding: 40px; display: none; }
-        .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #ff0000; border-radius: 50%; width: 40px; height: 40px; animation: spin 1s linear infinite; margin: 0 auto 20px; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .error { background: #ffebee; color: #c62828; padding: 15px; border-radius: 10px; margin: 20px 0; display: none; }
-        .url-params { background: #e3f2fd; padding: 15px; border-radius: 10px; margin: 20px 0; }
-        .param-item { margin: 5px 0; font-family: monospace; font-size: 0.9rem; }
-        .param-key { color: #1976d2; font-weight: bold; }
+        :root {
+            --primary: #FF0000;
+            --primary-dark: #CC0000;
+            --secondary: #282828;
+            --light: #FFFFFF;
+            --dark: #0F0F0F;
+            --gray: #AAAAAA;
+            --success: #28A745;
+            --card-bg: #1A1A1A;
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Roboto', 'Segoe UI', Arial, sans-serif;
+            background: var(--dark);
+            color: var(--light);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            text-align: center;
+            padding: 40px 20px;
+            background: linear-gradient(135deg, var(--dark), #1A1A1A);
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+            margin-bottom: 30px;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .logo-icon {
+            font-size: 3rem;
+            color: var(--primary);
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+        
+        h1 {
+            font-size: 2.8rem;
+            font-weight: 700;
+            background: linear-gradient(45deg, var(--primary), #FF6B6B);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 10px;
+        }
+        
+        .subtitle {
+            color: var(--gray);
+            font-size: 1.1rem;
+            max-width: 600px;
+            margin: 0 auto;
+        }
+        
+        .main-card {
+            background: var(--card-bg);
+            border-radius: 20px;
+            padding: 40px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        }
+        
+        .input-section {
+            margin-bottom: 30px;
+        }
+        
+        .input-group {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        input[type="text"] {
+            flex: 1;
+            padding: 18px 25px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 2px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            font-size: 16px;
+            color: var(--light);
+            transition: all 0.3s;
+            font-family: inherit;
+        }
+        
+        input[type="text"]:focus {
+            outline: none;
+            border-color: var(--primary);
+            background: rgba(255, 255, 255, 0.08);
+            box-shadow: 0 0 0 3px rgba(255, 0, 0, 0.1);
+        }
+        
+        input[type="text"]::placeholder {
+            color: rgba(255, 255, 255, 0.4);
+        }
+        
+        .btn {
+            padding: 18px 35px;
+            border: none;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            font-family: inherit;
+            text-decoration: none;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, var(--primary), var(--primary-dark));
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(255, 0, 0, 0.3);
+        }
+        
+        .btn-success {
+            background: linear-gradient(135deg, var(--success), #1E7E34);
+            color: white;
+        }
+        
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 25px rgba(40, 167, 69, 0.3);
+        }
+        
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.08);
+            color: white;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+        
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.15);
+        }
+        
+        .utility-buttons {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 50px 20px;
+            display: none;
+        }
+        
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-top: 4px solid var(--primary);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .error {
+            background: rgba(220, 53, 69, 0.15);
+            border: 1px solid rgba(220, 53, 69, 0.3);
+            color: #FF6B6B;
+            padding: 18px;
+            border-radius: 10px;
+            margin: 20px 0;
+            display: none;
+        }
+        
+        .result-section {
+            display: none;
+        }
+        
+        .video-info {
+            display: grid;
+            grid-template-columns: 300px 1fr;
+            gap: 30px;
+            margin-bottom: 40px;
+            background: rgba(0, 0, 0, 0.2);
+            padding: 25px;
+            border-radius: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        
+        @media (max-width: 768px) {
+            .video-info {
+                grid-template-columns: 1fr;
+            }
+        }
+        
+        .thumbnail-container {
+            position: relative;
+        }
+        
+        .video-thumbnail {
+            width: 100%;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+        
+        .duration-badge {
+            position: absolute;
+            bottom: 15px;
+            right: 15px;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+        
+        .video-details {
+            padding: 10px 0;
+        }
+        
+        .video-title {
+            font-size: 1.8rem;
+            font-weight: 600;
+            margin-bottom: 15px;
+            line-height: 1.3;
+        }
+        
+        .video-meta {
+            color: var(--gray);
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+        }
+        
+        .video-meta span {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .video-description {
+            color: rgba(255, 255, 255, 0.7);
+            line-height: 1.6;
+            margin-top: 20px;
+            font-size: 0.95rem;
+        }
+        
+        .quality-section {
+            margin: 40px 0;
+        }
+        
+        .section-title {
+            font-size: 1.5rem;
+            font-weight: 600;
+            margin-bottom: 25px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .quality-filters {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+        }
+        
+        .filter-btn {
+            padding: 12px 25px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            color: var(--gray);
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 0.95rem;
+        }
+        
+        .filter-btn:hover {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+        }
+        
+        .filter-btn.active {
+            background: rgba(255, 0, 0, 0.2);
+            border-color: var(--primary);
+            color: white;
+        }
+        
+        .formats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+            gap: 20px;
+        }
+        
+        .format-card {
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 15px;
+            padding: 25px;
+            transition: all 0.3s;
+            cursor: pointer;
+            position: relative;
+        }
+        
+        .format-card:hover {
+            transform: translateY(-5px);
+            border-color: var(--primary);
+            box-shadow: 0 15px 35px rgba(255, 0, 0, 0.15);
+        }
+        
+        .format-card.selected {
+            border-color: var(--primary);
+            background: rgba(255, 0, 0, 0.1);
+        }
+        
+        .format-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        
+        .format-quality {
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: white;
+        }
+        
+        .format-badge {
+            padding: 5px 12px;
+            background: rgba(255, 0, 0, 0.2);
+            color: var(--primary);
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+        }
+        
+        .format-details {
+            margin-bottom: 20px;
+        }
+        
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+            font-size: 0.9rem;
+        }
+        
+        .detail-label {
+            color: var(--gray);
+        }
+        
+        .detail-value {
+            color: white;
+            font-weight: 500;
+        }
+        
+        .format-size {
+            color: var(--success);
+            font-weight: 600;
+        }
+        
+        .format-codecs {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        
+        .codec-badge {
+            padding: 4px 10px;
+            background: rgba(255, 255, 255, 0.08);
+            border-radius: 6px;
+            font-size: 0.8rem;
+            color: rgba(255, 255, 255, 0.7);
+        }
+        
+        .download-section {
+            margin-top: 40px;
+            padding-top: 30px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+        }
+        
+        .download-options {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+        
+        .download-option {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 15px;
+            padding: 25px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            transition: all 0.3s;
+        }
+        
+        .download-option:hover {
+            border-color: var(--primary);
+            transform: translateY(-3px);
+        }
+        
+        .option-icon {
+            font-size: 2.5rem;
+            margin-bottom: 15px;
+            color: var(--primary);
+        }
+        
+        .option-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+        
+        .option-desc {
+            color: var(--gray);
+            font-size: 0.9rem;
+            margin-bottom: 20px;
+            line-height: 1.5;
+        }
+        
+        .progress-container {
+            margin-top: 30px;
+            display: none;
+        }
+        
+        .progress-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 10px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--primary), #FF6B6B);
+            border-radius: 5px;
+            width: 0%;
+            transition: width 0.3s;
+        }
+        
+        .progress-stats {
+            display: flex;
+            justify-content: space-between;
+            margin-top: 10px;
+            color: var(--gray);
+            font-size: 0.9rem;
+        }
+        
+        .url-display {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 15px;
+            margin-top: 20px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            color: rgba(255, 255, 255, 0.7);
+            word-break: break-all;
+            max-height: 150px;
+            overflow-y: auto;
+            display: none;
+        }
+        
+        .features {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 25px;
+            margin-top: 60px;
+        }
+        
+        .feature-card {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 30px;
+            border-radius: 15px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            transition: all 0.3s;
+        }
+        
+        .feature-card:hover {
+            border-color: var(--primary);
+            transform: translateY(-5px);
+        }
+        
+        .feature-icon {
+            font-size: 2.8rem;
+            margin-bottom: 20px;
+            color: var(--primary);
+        }
+        
+        .feature-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 15px;
+        }
+        
+        .feature-desc {
+            color: var(--gray);
+            line-height: 1.6;
+        }
+        
+        footer {
+            text-align: center;
+            margin-top: 80px;
+            padding-top: 30px;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            color: var(--gray);
+            font-size: 0.9rem;
+        }
+        
+        .footer-links {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 20px;
+        }
+        
+        .footer-links a {
+            color: var(--gray);
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+        
+        .footer-links a:hover {
+            color: var(--primary);
+        }
+        
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+            }
+            
+            .main-card {
+                padding: 25px;
+            }
+            
+            h1 {
+                font-size: 2.2rem;
+            }
+            
+            .input-group {
+                flex-direction: column;
+            }
+            
+            .formats-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .download-options {
+                grid-template-columns: 1fr;
+            }
+            
+            .features {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>🔐 YouTube Tokenized URL Generator</h1>
-            <p>Generate real YouTube URLs with signatures, expiration times, and all parameters</p>
-        </div>
+        <header>
+            <div class="logo">
+                <div class="logo-icon">▶️</div>
+            </div>
+            <h1>YouTube Video Downloader</h1>
+            <p class="subtitle">Download any YouTube video in HD quality. Fast, free, and works with all videos including shorts and live streams.</p>
+        </header>
         
-        <div class="content">
+        <div class="main-card">
             <div class="input-section">
-                <h2>Enter YouTube URL</h2>
+                <h2 style="margin-bottom: 20px; font-size: 1.4rem; color: white;">Paste YouTube Link</h2>
                 <div class="input-group">
-                    <input type="text" id="youtubeUrl" placeholder="https://www.youtube.com/watch?v=..." value="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
-                    <button onclick="generateURLs()">Generate Tokenized URLs</button>
+                    <input type="text" id="youtubeUrl" 
+                           placeholder="https://www.youtube.com/watch?v=... or https://youtu.be/..."
+                           autocomplete="off"
+                           value="">
+                    <button class="btn btn-primary" onclick="getVideoInfo()" id="analyzeBtn">
+                        <span>🔍 Analyze Video</span>
+                    </button>
                 </div>
-                <p style="color: #666; font-size: 0.9rem;">This will generate real YouTube URLs with signatures that expire in 6 hours.</p>
+                
+                <div class="utility-buttons">
+                    <button class="btn btn-secondary" onclick="pasteFromClipboard()">
+                        📋 Paste from Clipboard
+                    </button>
+                    <button class="btn btn-secondary" onclick="clearInput()">
+                        🗑️ Clear
+                    </button>
+                    <button class="btn btn-secondary" onclick="showExample()">
+                        📝 Show Example
+                    </button>
+                </div>
             </div>
             
             <div class="loading" id="loading">
                 <div class="spinner"></div>
-                <p>Fetching video data and generating tokenized URLs...</p>
+                <p style="color: #aaa; margin-top: 20px; font-size: 1.1rem;">Fetching video information...</p>
+                <p style="color: #666; margin-top: 10px; font-size: 0.9rem;">This may take a few seconds</p>
             </div>
             
             <div class="error" id="error"></div>
             
             <div class="result-section" id="resultSection">
-                <div class="video-info" id="videoInfo"></div>
+                <div class="video-info" id="videoInfo">
+                    <!-- Video info will be inserted here -->
+                </div>
                 
-                <h2>Available Formats with Tokenized URLs:</h2>
-                <div class="formats-grid" id="formatsGrid"></div>
+                <div class="quality-section">
+                    <div class="section-title">
+                        <span>🎯 Select Quality</span>
+                    </div>
+                    
+                    <div class="quality-filters">
+                        <button class="filter-btn active" onclick="filterFormats('all')">All Formats</button>
+                        <button class="filter-btn" onclick="filterFormats('video+audio')">Video + Audio</button>
+                        <button class="filter-btn" onclick="filterFormats('video')">Video Only</button>
+                        <button class="filter-btn" onclick="filterFormats('audio')">Audio Only</button>
+                        <button class="filter-btn" onclick="filterFormats('hd')">HD (720p+)</button>
+                    </div>
+                    
+                    <div class="formats-grid" id="formatsGrid">
+                        <!-- Format cards will be inserted here -->
+                    </div>
+                </div>
                 
-                <div class="url-params">
-                    <h3>📋 Generated URL Parameters:</h3>
-                    <div id="urlParams"></div>
+                <div class="download-section" id="downloadSection">
+                    <div class="section-title">
+                        <span>⬇️ Download Options</span>
+                    </div>
+                    
+                    <div id="downloadMessage" style="color: #aaa; margin-bottom: 20px; text-align: center;">
+                        Select a quality format above to enable download options
+                    </div>
+                    
+                    <div class="download-options" id="downloadOptions" style="display: none;">
+                        <div class="download-option">
+                            <div class="option-icon">⚡</div>
+                            <div class="option-title">Direct Download</div>
+                            <div class="option-desc">Download immediately in your browser</div>
+                            <button class="btn btn-primary" onclick="downloadDirect()" id="directBtn" style="width: 100%;">
+                                Download Now
+                            </button>
+                        </div>
+                        
+                        <div class="download-option">
+                            <div class="option-icon">🎬</div>
+                            <div class="option-title">Stream Online</div>
+                            <div class="option-desc">Watch directly in browser without downloading</div>
+                            <button class="btn btn-success" onclick="streamVideo()" id="streamBtn" style="width: 100%;">
+                                Stream Video
+                            </button>
+                        </div>
+                        
+                        <div class="download-option">
+                            <div class="option-icon">📁</div>
+                            <div class="option-title">Get Direct URL</div>
+                            <div class="option-desc">Get the direct googlevideo.com link</div>
+                            <button class="btn btn-secondary" onclick="getDirectURL()" id="urlBtn" style="width: 100%;">
+                                Get URL
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="progress-container" id="progressContainer">
+                        <div class="progress-header">
+                            <span>Download Progress</span>
+                            <span id="progressPercent">0%</span>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="progressFill"></div>
+                        </div>
+                        <div class="progress-stats">
+                            <span id="progressSpeed">Speed: 0 KB/s</span>
+                            <span id="progressTime">Time left: --:--</span>
+                        </div>
+                    </div>
+                    
+                    <div class="url-display" id="urlDisplay">
+                        <!-- Direct URL will be displayed here -->
+                    </div>
                 </div>
             </div>
         </div>
+        
+        <div class="features">
+            <div class="feature-card">
+                <div class="feature-icon">🔓</div>
+                <div class="feature-title">No Limits</div>
+                <div class="feature-desc">Download as many videos as you want, no restrictions or registration required.</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🚀</div>
+                <div class="feature-title">High Speed</div>
+                <div class="feature-desc">Optimized for fast downloads using multiple connections and efficient streaming.</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🎨</div>
+                <div class="feature-title">All Qualities</div>
+                <div class="feature-desc">From 144p to 4K, MP3 audio to highest video quality available.</div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon">🛡️</div>
+                <div class="feature-title">Safe & Private</div>
+                <div class="feature-desc">Your privacy is protected. We don't store any of your data or download history.</div>
+            </div>
+        </div>
+        
+        <footer>
+            <p>© 2024 YouTube Downloader. For personal use only.</p>
+            <p style="margin-top: 10px; color: #666; font-size: 0.85rem;">
+                Disclaimer: Please respect copyright laws and only download videos you have permission to download.
+            </p>
+            <div class="footer-links">
+                <a href="javascript:void(0)" onclick="showAbout()">About</a>
+                <a href="javascript:void(0)" onclick="showPrivacy()">Privacy</a>
+                <a href="javascript:void(0)" onclick="showTerms()">Terms</a>
+                <a href="javascript:void(0)" onclick="showHelp()">Help</a>
+            </div>
+        </footer>
     </div>
     
     <script>
-        function generateURLs() {
+        let currentVideoId = '';
+        let currentFormats = [];
+        let selectedFormat = null;
+        let currentDownloadId = null;
+        
+        // Initialize with example URL if needed
+        function showExample() {
+            document.getElementById('youtubeUrl').value = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+            getVideoInfo();
+        }
+        
+        async function pasteFromClipboard() {
+            try {
+                const text = await navigator.clipboard.readText();
+                document.getElementById('youtubeUrl').value = text;
+            } catch (err) {
+                showError('Failed to paste from clipboard. Please paste manually.');
+            }
+        }
+        
+        function clearInput() {
+            document.getElementById('youtubeUrl').value = '';
+            document.getElementById('resultSection').style.display = 'none';
+            document.getElementById('error').style.display = 'none';
+        }
+        
+        function getVideoInfo() {
             const url = document.getElementById('youtubeUrl').value.trim();
             const loading = document.getElementById('loading');
             const resultSection = document.getElementById('resultSection');
             const errorDiv = document.getElementById('error');
+            const analyzeBtn = document.getElementById('analyzeBtn');
             
             if (!url) {
                 showError('Please enter a YouTube URL');
+                return;
+            }
+            
+            // Validate URL
+            if (!url.includes('youtube.com') && !url.includes('youtu.be')) {
+                showError('Please enter a valid YouTube URL');
                 return;
             }
             
@@ -515,98 +1085,288 @@ HTML_TEMPLATE = """
             resultSection.style.display = 'none';
             errorDiv.style.display = 'none';
             loading.style.display = 'block';
+            analyzeBtn.disabled = true;
+            analyzeBtn.innerHTML = '<span>⏳ Processing...</span>';
             
             // Call API
-            fetch(`/api/generate-tokenized-urls?url=${encodeURIComponent(url)}`)
-                .then(response => response.json())
+            fetch(`/api/get-video-info?url=${encodeURIComponent(url)}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.json();
+                })
                 .then(data => {
                     loading.style.display = 'none';
+                    analyzeBtn.disabled = false;
+                    analyzeBtn.innerHTML = '<span>🔍 Analyze Video</span>';
                     
                     if (data.success) {
-                        displayResults(data);
+                        displayVideoInfo(data);
                     } else {
-                        showError(data.error || 'Failed to generate URLs');
+                        showError(data.error || 'Failed to get video information. The video might be private or restricted.');
                     }
                 })
                 .catch(error => {
                     loading.style.display = 'none';
-                    showError('Network error. Please try again.');
+                    analyzeBtn.disabled = false;
+                    analyzeBtn.innerHTML = '<span>🔍 Analyze Video</span>';
+                    showError('Network error. Please check your connection and try again.');
+                    console.error('Error:', error);
                 });
         }
         
-        function displayResults(data) {
+        function displayVideoInfo(data) {
             const resultSection = document.getElementById('resultSection');
             const videoInfo = document.getElementById('videoInfo');
             const formatsGrid = document.getElementById('formatsGrid');
-            const urlParams = document.getElementById('urlParams');
+            const downloadSection = document.getElementById('downloadSection');
+            const downloadOptions = document.getElementById('downloadOptions');
+            const downloadMessage = document.getElementById('downloadMessage');
+            
+            currentVideoId = data.video_id;
+            currentFormats = data.formats;
+            selectedFormat = null;
+            
+            // Format views count
+            const views = data.views ? formatNumber(data.views) : 'N/A';
             
             // Display video info
             videoInfo.innerHTML = `
-                <h3>${data.info.title}</h3>
-                <p><strong>Channel:</strong> ${data.info.author}</p>
-                <p><strong>Video ID:</strong> ${data.video_id}</p>
-                <p><strong>Formats available:</strong> ${data.formats.length}</p>
+                <div class="thumbnail-container">
+                    <img src="${data.thumbnail}" alt="Thumbnail" class="video-thumbnail" onerror="this.src='https://i.ytimg.com/vi/${data.video_id}/hqdefault.jpg'">
+                    ${data.duration ? `<div class="duration-badge">${data.duration}</div>` : ''}
+                </div>
+                <div class="video-details">
+                    <h2 class="video-title">${data.title || 'Untitled Video'}</h2>
+                    <div class="video-meta">
+                        <span><strong>Channel:</strong> ${data.channel || 'Unknown'}</span>
+                        <span>👁️ ${views} views</span>
+                        ${data.duration ? `<span>⏱️ ${data.duration}</span>` : ''}
+                    </div>
+                    <div class="video-description">
+                        ${data.description || 'No description available.'}
+                    </div>
+                    <div style="margin-top: 20px; color: #4CAF50; font-size: 0.9rem;">
+                        ✅ ${data.formats.length} formats available
+                    </div>
+                </div>
             `;
             
             // Display formats
+            filterFormats('all');
+            
+            // Reset download section
+            downloadOptions.style.display = 'none';
+            downloadMessage.style.display = 'block';
+            document.getElementById('progressContainer').style.display = 'none';
+            document.getElementById('urlDisplay').style.display = 'none';
+            
+            // Show result section
+            resultSection.style.display = 'block';
+            resultSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+        
+        function filterFormats(filterType) {
+            const formatsGrid = document.getElementById('formatsGrid');
+            const filterBtns = document.querySelectorAll('.filter-btn');
+            
+            // Update active filter button
+            filterBtns.forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Filter formats
+            let filteredFormats = [...currentFormats];
+            
+            switch(filterType) {
+                case 'video+audio':
+                    filteredFormats = currentFormats.filter(f => f.type === 'video+audio');
+                    break;
+                case 'video':
+                    filteredFormats = currentFormats.filter(f => f.type === 'video');
+                    break;
+                case 'audio':
+                    filteredFormats = currentFormats.filter(f => f.type === 'audio');
+                    break;
+                case 'hd':
+                    filteredFormats = currentFormats.filter(f => {
+                        if (f.type.includes('video')) {
+                            const height = f.height || 0;
+                            return height >= 720;
+                        }
+                        return false;
+                    });
+                    break;
+            }
+            
+            // Display formats
+            if (filteredFormats.length === 0) {
+                formatsGrid.innerHTML = `
+                    <div style="grid-column: 1 / -1; text-align: center; padding: 40px; color: #666;">
+                        <div style="font-size: 3rem; margin-bottom: 20px;">😕</div>
+                        <h3>No formats found</h3>
+                        <p>Try selecting a different filter or check if the video is available.</p>
+                    </div>
+                `;
+                return;
+            }
+            
             let formatsHtml = '';
-            data.formats.forEach((format, index) => {
-                const urlDisplay = format.generated_url ? 
-                    format.generated_url.substring(0, 100) + '...' : 
-                    'URL generation failed';
+            filteredFormats.forEach((format, index) => {
+                const isSelected = selectedFormat && selectedFormat.format_id === format.format_id;
+                const isGooglevideo = format.is_googlevideo;
                 
                 formatsHtml += `
-                    <div class="format-card">
-                        <div class="format-quality">${format.quality}</div>
+                    <div class="format-card ${isSelected ? 'selected' : ''}" 
+                         onclick="selectFormat('${format.format_id}')">
+                        <div class="format-header">
+                            <div class="format-quality">${format.quality}</div>
+                            <div class="format-badge">${format.type.toUpperCase()}</div>
+                        </div>
+                        
                         <div class="format-details">
-                            <p><strong>Type:</strong> ${format.type}</p>
-                            <p><strong>Size:</strong> ${format.size}</p>
-                            <p><strong>Bitrate:</strong> ${format.bitrate ? format.bitrate + ' bps' : 'N/A'}</p>
-                            <p><strong>Resolution:</strong> ${format.width}x${format.height}</p>
-                            <p><strong>Signature:</strong> ${format.requires_signature ? 'Required ✓' : 'Not required'}</p>
+                            <div class="detail-row">
+                                <span class="detail-label">Format:</span>
+                                <span class="detail-value">${format.extension.toUpperCase()}</span>
+                            </div>
+                            <div class="detail-row">
+                                <span class="detail-label">Size:</span>
+                                <span class="detail-value format-size">${format.size}</span>
+                            </div>
+                            ${format.width ? `
+                                <div class="detail-row">
+                                    <span class="detail-label">Resolution:</span>
+                                    <span class="detail-value">${format.width}×${format.height}</span>
+                                </div>
+                            ` : ''}
+                            ${format.fps ? `
+                                <div class="detail-row">
+                                    <span class="detail-label">FPS:</span>
+                                    <span class="detail-value">${format.fps}</span>
+                                </div>
+                            ` : ''}
+                            ${format.tbr ? `
+                                <div class="detail-row">
+                                    <span class="detail-label">Bitrate:</span>
+                                    <span class="detail-value">${format.tbr}kbps</span>
+                                </div>
+                            ` : ''}
                         </div>
-                        <div class="url-display" title="${format.generated_url || ''}">
-                            ${urlDisplay}
-                        </div>
-                        ${format.generated_url ? `
-                            <button class="copy-btn" onclick="copyToClipboard('${format.generated_url.replace(/'/g, "\\'")}')">
-                                Copy URL
-                            </button>
-                            <button class="copy-btn" onclick="testDownload('${format.generated_url.replace(/'/g, "\\'")}', '${format.quality}')" style="background: #2196F3; margin-left: 5px;">
-                                Test Download
-                            </button>
+                        
+                        ${format.vcodec || format.acodec ? `
+                            <div class="format-codecs">
+                                ${format.vcodec && format.vcodec !== 'none' ? `
+                                    <span class="codec-badge">${format.vcodec.split('.')[0]}</span>
+                                ` : ''}
+                                ${format.acodec && format.acodec !== 'none' ? `
+                                    <span class="codec-badge">${format.acodec.split('.')[0]}</span>
+                                ` : ''}
+                            </div>
                         ` : ''}
+                        
+                        <div style="margin-top: 15px; font-size: 0.8rem; color: ${isGooglevideo ? '#4CAF50' : '#FF9800'};">
+                            ${isGooglevideo ? '✅ Direct googlevideo.com link' : '⚠️ May require processing'}
+                        </div>
                     </div>
                 `;
             });
             
             formatsGrid.innerHTML = formatsHtml;
-            
-            // Display URL parameters from first format
-            if (data.formats.length > 0 && data.formats[0].url_params) {
-                let paramsHtml = '';
-                const params = data.formats[0].url_params;
-                
-                for (const [key, value] of Object.entries(params)) {
-                    paramsHtml += `
-                        <div class="param-item">
-                            <span class="param-key">${key}:</span> ${value}
-                        </div>
-                    `;
-                }
-                
-                urlParams.innerHTML = paramsHtml;
-            }
-            
-            // Show result section
-            resultSection.style.display = 'block';
-            resultSection.scrollIntoView({ behavior: 'smooth' });
         }
         
-        function showError(message) {
-            const errorDiv = document.getElementById('error');
-            errorDiv.innerHTML = `<strong>Error:</strong> ${message}`;
-            errorDiv.style.display = 'block';
+        function selectFormat(formatId) {
+            selectedFormat = currentFormats.find(f => f.format_id === formatId);
+            
+            if (!selectedFormat) return;
+            
+            // Update UI
+            document.querySelectorAll('.format-card').forEach(card => {
+                card.classList.remove('selected');
+            });
+            event.target.closest('.format-card').classList.add('selected');
+            
+            // Show download options
+            const downloadOptions = document.getElementById('downloadOptions');
+            const downloadMessage = document.getElementById('downloadMessage');
+            const directBtn = document.getElementById('directBtn');
+            const streamBtn = document.getElementById('streamBtn');
+            const urlBtn = document.getElementById('urlBtn');
+            
+            downloadOptions.style.display = 'grid';
+            downloadMessage.style.display = 'none';
+            
+            // Update button texts
+            directBtn.innerHTML = `⬇️ Download ${selectedFormat.quality}`;
+            streamBtn.innerHTML = `▶️ Stream ${selectedFormat.quality}`;
+            urlBtn.innerHTML = `🔗 Get ${selectedFormat.quality} URL`;
+            
+            // Scroll to download section
+            document.getElementById('downloadSection').scrollIntoView({ 
+                behavior: 'smooth', 
+                block: 'start' 
+            });
+        }
+        
+        function downloadDirect() {
+            if (!selectedFormat || !currentVideoId) {
+                showError('Please select a format first');
+                return;
+            }
+            
+            // Open download in new tab
+            const url = `/api/download-direct/${currentVideoId}?format=${selectedFormat.format_id}&quality=${encodeURIComponent(selectedFormat.quality)}`;
+            window.open(url, '_blank');
+        }
+        
+        function streamVideo() {
+            if (!selectedFormat || !currentVideoId) {
+                showError('Please select a format first');
+                return;
+            }
+            
+            // Open stream in new tab
+            const url = `/api/stream/${currentVideoId}?format=${selectedFormat.format_id}`;
+            window.open(url, '_blank');
+        }
+        
+        async function getDirectURL() {
+            if (!selectedFormat || !currentVideoId) {
+                showError('Please select a format first');
+                return;
+            }
+            
+            const urlDisplay = document.getElementById('urlDisplay');
+            urlDisplay.style.display = 'block';
+            urlDisplay.innerHTML = '<div style="color: #aaa;">⏳ Getting direct URL...</div>';
+            
+            try {
+                const response = await fetch(`/api/get-direct-url/${currentVideoId}?format=${selectedFormat.format_id}`);
+                const data = await response.json();
+                
+                if (data.success && data.direct_url) {
+                    // Display the URL
+                    urlDisplay.innerHTML = `
+                        <div style="margin-bottom: 10px; color: #4CAF50;">
+                            ✅ Direct googlevideo.com URL (expires in 6 hours):
+                        </div>
+                        <div style="background: rgba(0,0,0,0.5); padding: 10px; border-radius: 5px; margin-bottom: 10px; font-size: 0.8rem;">
+                            ${data.direct_url.substring(0, 100)}...
+                        </div>
+                        <button class="btn btn-secondary" onclick="copyToClipboard('${data.direct_url.replace(/'/g, "\\'")}')" style="width: 100%; margin-top: 10px;">
+                            📋 Copy URL
+                        </button>
+                        <div style="margin-top: 10px; font-size: 0.8rem; color: #666;">
+                            Use this URL in any download manager like IDM, wget, or curl
+                        </div>
+                    `;
+                } else {
+                    urlDisplay.innerHTML = '<div style="color: #FF9800;">⚠️ Could not get direct URL. Try downloading directly instead.</div>';
+                }
+            } catch (error) {
+                urlDisplay.innerHTML = '<div style="color: #f44336;">❌ Error getting URL</div>';
+            }
+            
+            urlDisplay.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
         
         function copyToClipboard(text) {
@@ -614,283 +1374,307 @@ HTML_TEMPLATE = """
                 alert('URL copied to clipboard!');
             }).catch(err => {
                 console.error('Failed to copy: ', err);
+                alert('Failed to copy URL. Please copy manually.');
             });
         }
         
-        function testDownload(url, quality) {
-            // Open download in new tab
-            const filename = `youtube_${quality}_${Date.now()}.${quality.includes('audio') ? 'mp3' : 'mp4'}`;
-            
-            // Create a temporary link for download
-            const link = document.createElement('a');
-            link.href = `/api/proxy-download?url=${encodeURIComponent(url)}&filename=${filename}`;
-            link.target = '_blank';
-            link.click();
+        function formatNumber(num) {
+            if (num >= 1000000000) {
+                return (num / 1000000000).toFixed(1) + 'B';
+            }
+            if (num >= 1000000) {
+                return (num / 1000000).toFixed(1) + 'M';
+            }
+            if (num >= 1000) {
+                return (num / 1000).toFixed(1) + 'K';
+            }
+            return num.toString();
+        }
+        
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.innerHTML = `
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 1.2rem;">❌</span>
+                    <div>
+                        <strong>Error:</strong> ${message}
+                        <div style="margin-top: 5px; font-size: 0.9rem; color: rgba(255,255,255,0.7);">
+                            Make sure the URL is correct and the video is publicly available.
+                        </div>
+                    </div>
+                </div>
+            `;
+            errorDiv.style.display = 'block';
+            errorDiv.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
         
         // Allow Enter key to submit
         document.getElementById('youtubeUrl').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
-                generateURLs();
+                getVideoInfo();
             }
         });
+        
+        // Demo info dialogs
+        function showAbout() {
+            alert('YouTube Downloader v2.0\n\nA free tool to download YouTube videos in any quality.\n\nFeatures:\n• All video qualities (144p to 4K)\n• Audio extraction (MP3)\n• Fast downloads\n• No registration required\n• Privacy focused');
+        }
+        
+        function showPrivacy() {
+            alert('Privacy Policy\n\nWe respect your privacy:\n• No user data is stored\n• No download history is kept\n• No cookies for tracking\n• All processing happens in real-time\n• No personal information required');
+        }
+        
+        function showTerms() {
+            alert('Terms of Use\n\n1. For personal use only\n2. Respect copyright laws\n3. Download only videos you have permission to download\n4. No commercial use\n5. Use at your own risk');
+        }
+        
+        function showHelp() {
+            alert('Help & Support\n\n1. Paste any YouTube URL\n2. Click "Analyze Video"\n3. Select your preferred quality\n4. Choose download method\n\nCommon issues:\n• Private videos cannot be downloaded\n• Age-restricted videos may not work\n• Check your internet connection\n• Try a different browser if issues persist');
+        }
+        
+        // Auto-focus input on page load
+        window.onload = function() {
+            document.getElementById('youtubeUrl').focus();
+        };
     </script>
 </body>
 </html>
-"""
+'''
 
 # ==================== API ENDPOINTS ====================
 
 @app.route('/')
 def home():
-    """Home page with URL generator"""
+    """Home page with downloader interface"""
     return render_template_string(HTML_TEMPLATE)
 
-@app.route('/api/generate-tokenized-urls', methods=['GET'])
-def generate_tokenized_urls():
-    """Generate tokenized URLs for a YouTube video"""
+@app.route('/api/get-video-info', methods=['GET'])
+def get_video_info():
+    """Get video information and available formats"""
     url = request.args.get('url', '')
     
     if not url:
         return jsonify({"success": False, "error": "URL parameter is required"}), 400
     
-    video_id = YouTubeTokenizedURLGenerator.extract_video_id(url)
+    video_id = YouTubeRealDownloader.extract_video_id(url)
     if not video_id:
         return jsonify({"success": False, "error": "Invalid YouTube URL"}), 400
     
     try:
-        # Fetch video data
-        player_data = YouTubeTokenizedURLGenerator.fetch_video_data(video_id)
-        
-        if not player_data:
-            return jsonify({"success": False, "error": "Could not fetch video data"}), 500
-        
-        # Extract streaming info
-        streaming_info = YouTubeTokenizedURLGenerator.extract_streaming_info(player_data)
-        
-        if not streaming_info:
-            return jsonify({"success": False, "error": "No streaming data available"}), 404
-        
         # Get video info
-        video_info = YouTubeTokenizedURLGenerator.get_video_info(video_id)
+        video_info = YouTubeRealDownloader.get_video_info(video_id)
         
-        # Extract formats
-        formats = YouTubeTokenizedURLGenerator.extract_formats_with_signatures(
-            streaming_info['streaming_data']
-        )
+        if not video_info:
+            return jsonify({"success": False, "error": "Could not fetch video information"}), 500
         
-        if not formats:
-            return jsonify({"success": False, "error": "No formats available"}), 404
-        
-        # Generate tokenized URLs for each format
-        processed_formats = []
-        for fmt in formats[:10]:  # Limit to 10 formats
-            # Generate tokenized URL
-            tokenized_url = YouTubeTokenizedURLGenerator.generate_tokenized_url(
-                fmt, 
-                video_id, 
-                fmt['itag']
-            )
-            
-            if tokenized_url:
-                processed_formats.append({
-                    **fmt,
-                    'generated_url': tokenized_url['url'],
-                    'url_params': tokenized_url['params'],
-                    'has_signature': tokenized_url['signature_present']
-                })
-            else:
-                processed_formats.append(fmt)
-        
-        return jsonify({
+        # Format response
+        response = {
             "success": True,
             "video_id": video_id,
-            "info": video_info,
-            "formats_count": len(formats),
-            "formats": processed_formats,
-            "signature_info": {
-                "total_formats": len(formats),
-                "requires_signature": sum(1 for f in formats if f['requires_signature']),
-                "generated_urls": sum(1 for f in processed_formats if 'generated_url' in f)
-            },
-            "timestamp": time.time()
-        })
+            "title": video_info.get('title', 'Unknown Title'),
+            "channel": video_info.get('channel', 'Unknown Channel'),
+            "duration": video_info.get('duration', '0:00'),
+            "views": video_info.get('views', 0),
+            "description": video_info.get('description', ''),
+            "thumbnail": video_info.get('thumbnail', f'https://i.ytimg.com/vi/{video_id}/hqdefault.jpg'),
+            "formats": video_info.get('formats', []),
+            "format_count": len(video_info.get('formats', []))
+        }
+        
+        return jsonify(response)
         
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/generate-single-url', methods=['GET'])
-def generate_single_url():
-    """Generate a single tokenized URL"""
-    url = request.args.get('url', '')
-    itag = request.args.get('itag', '18')
-    
-    if not url:
-        return jsonify({"success": False, "error": "URL parameter is required"}), 400
-    
-    video_id = YouTubeTokenizedURLGenerator.extract_video_id(url)
-    if not video_id:
-        return jsonify({"success": False, "error": "Invalid YouTube URL"}), 400
+@app.route('/api/download-direct/<video_id>', methods=['GET'])
+def download_direct(video_id):
+    """Direct download endpoint"""
+    format_id = request.args.get('format', 'best')
+    quality = request.args.get('quality', 'Unknown')
     
     try:
-        # Fetch video data
-        player_data = YouTubeTokenizedURLGenerator.fetch_video_data(video_id)
+        # Get real stream URL
+        stream_info = YouTubeRealDownloader.get_real_stream_url(video_id, format_id)
         
-        if not player_data:
-            return jsonify({"success": False, "error": "Could not fetch video data"}), 500
+        if not stream_info or not stream_info.get('url'):
+            return jsonify({"success": False, "error": "Could not get download URL"}), 500
         
-        streaming_info = YouTubeTokenizedURLGenerator.extract_streaming_info(player_data)
+        # Get video info for filename
+        video_info = YouTubeRealDownloader.get_video_info(video_id)
+        title = video_info.get('title', f'video_{video_id}') if video_info else f'video_{video_id}'
         
-        if not streaming_info:
-            return jsonify({"success": False, "error": "No streaming data"}), 404
+        # Clean filename
+        filename = re.sub(r'[^\w\-_\. ]', '_', title[:100])
+        filename += f'_{quality}.{stream_info["ext"]}'
         
-        # Find the requested format
-        target_format = None
-        streaming_data = streaming_info['streaming_data']
-        
-        # Search in formats
-        for fmt in streaming_data.get('formats', []):
-            if str(fmt.get('itag', '')) == str(itag):
-                target_format = fmt
-                break
-        
-        # Search in adaptive formats
-        if not target_format:
-            for fmt in streaming_data.get('adaptiveFormats', []):
-                if str(fmt.get('itag', '')) == str(itag):
-                    target_format = fmt
-                    break
-        
-        if not target_format:
-            return jsonify({"success": False, "error": f"Format itag={itag} not found"}), 404
-        
-        # Generate tokenized URL
-        tokenized_url = YouTubeTokenizedURLGenerator.generate_tokenized_url(
-            target_format, 
-            video_id, 
-            itag
-        )
-        
-        if not tokenized_url:
-            return jsonify({"success": False, "error": "Failed to generate URL"}), 500
-        
-        # Get video info
-        video_info = YouTubeTokenizedURLGenerator.get_video_info(video_id)
-        
-        return jsonify({
-            "success": True,
-            "video_id": video_id,
-            "title": video_info['title'],
-            "author": video_info['author'],
-            "itag": itag,
-            "generated_url": tokenized_url['url'],
-            "url_length": len(tokenized_url['url']),
-            "parameters_count": len(tokenized_url['params']),
-            "has_signature": tokenized_url['signature_present'],
-            "expires_at": tokenized_url['params'].get('expire', ''),
-            "sample_parameters": {
-                k: v for i, (k, v) in enumerate(tokenized_url['params'].items()) 
-                if i < 5  # Show first 5 parameters
-            }
-        })
-        
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-@app.route('/api/proxy-download', methods=['GET'])
-def proxy_download():
-    """Proxy download for testing generated URLs"""
-    url = request.args.get('url', '')
-    filename = request.args.get('filename', 'download.mp4')
-    
-    if not url:
-        return jsonify({"error": "URL parameter is required"}), 400
-    
-    try:
         # Stream download
-        headers = {'User-Agent': USER_AGENT}
+        headers = {
+            'User-Agent': USER_AGENT,
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity',
+            'Range': 'bytes=0-',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com'
+        }
         
         def generate():
-            with requests.get(url, headers=headers, stream=True, timeout=TIMEOUT) as r:
+            with requests.get(stream_info['url'], headers=headers, stream=True, timeout=TIMEOUT) as r:
                 r.raise_for_status()
                 for chunk in r.iter_content(chunk_size=8192):
                     yield chunk
         
         # Determine content type
         content_type = 'video/mp4'
-        if '.mp3' in filename:
+        if stream_info['ext'] == 'webm':
+            content_type = 'video/webm'
+        elif 'audio' in format_id:
             content_type = 'audio/mpeg'
         
         return Response(
             stream_with_context(generate()),
             headers={
                 'Content-Disposition': f'attachment; filename="{filename}"',
-                'Content-Type': content_type
+                'Content-Type': content_type,
+                'Content-Length': str(stream_info.get('filesize', '')) if stream_info.get('filesize') else ''
             }
         )
         
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/api/debug-url', methods=['GET'])
-def debug_url():
-    """Debug a generated URL"""
-    url = request.args.get('url', '')
-    
-    if not url:
-        return jsonify({"error": "URL parameter is required"}), 400
+@app.route('/api/stream/<video_id>', methods=['GET'])
+def stream_video(video_id):
+    """Stream video directly"""
+    format_id = request.args.get('format', 'best')
     
     try:
-        # Parse the URL
-        parsed = url.split('?')
-        base_url = parsed[0]
+        # Use yt-dlp to get stream URL
+        stream_info = YouTubeRealDownloader.get_real_stream_url(video_id, format_id)
         
-        parameters = {}
-        if len(parsed) > 1:
-            for param in parsed[1].split('&'):
-                if '=' in param:
-                    key, value = param.split('=', 1)
-                    parameters[key] = unquote(value)
+        if not stream_info or not stream_info.get('url'):
+            return jsonify({"success": False, "error": "Could not get stream URL"}), 500
         
-        # Check URL
-        headers = {'User-Agent': USER_AGENT}
-        response = requests.head(url, headers=headers, timeout=TIMEOUT, allow_redirects=True)
+        # Stream with proper headers
+        headers = {
+            'User-Agent': USER_AGENT,
+            'Accept': '*/*',
+            'Accept-Encoding': 'identity',
+            'Range': 'bytes=0-',
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com'
+        }
+        
+        response = requests.get(stream_info['url'], headers=headers, stream=True, timeout=TIMEOUT)
+        
+        def generate():
+            for chunk in response.iter_content(chunk_size=8192):
+                yield chunk
+        
+        # Determine content type
+        content_type = 'video/mp4'
+        if stream_info['ext'] == 'webm':
+            content_type = 'video/webm'
+        elif 'audio' in format_id:
+            content_type = 'audio/mpeg'
+        
+        return Response(
+            stream_with_context(generate()),
+            content_type=content_type,
+            headers={
+                'Accept-Ranges': 'bytes',
+                'Cache-Control': 'no-cache',
+                'Content-Disposition': 'inline'
+            }
+        )
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/api/get-direct-url/<video_id>', methods=['GET'])
+def get_direct_url(video_id):
+    """Get direct googlevideo.com URL"""
+    format_id = request.args.get('format', 'best')
+    
+    try:
+        # Get real stream URL
+        stream_info = YouTubeRealDownloader.get_real_stream_url(video_id, format_id)
+        
+        if not stream_info or not stream_info.get('url'):
+            return jsonify({"success": False, "error": "Could not get direct URL"}), 500
+        
+        # Get video info for response
+        video_info = YouTubeRealDownloader.get_video_info(video_id)
         
         return jsonify({
             "success": True,
-            "url_length": len(url),
-            "base_url": base_url,
-            "parameters_count": len(parameters),
-            "http_status": response.status_code,
-            "content_type": response.headers.get('Content-Type', ''),
-            "content_length": response.headers.get('Content-Length', ''),
-            "expires_param": parameters.get('expire', ''),
-            "signature_present": 'sig' in parameters,
-            "key_parameters": {
-                'expire': parameters.get('expire', ''),
-                'ei': parameters.get('ei', ''),
-                'ip': parameters.get('ip', ''),
-                'id': parameters.get('id', ''),
-                'itag': parameters.get('itag', ''),
-                'signature_length': len(parameters.get('sig', '')) if 'sig' in parameters else 0
-            }
+            "video_id": video_id,
+            "title": video_info.get('title', '') if video_info else 'Unknown',
+            "quality": format_id,
+            "direct_url": stream_info['url'],
+            "url_length": len(stream_info['url']),
+            "expires_in": "6 hours",
+            "note": "This URL will expire. Use it quickly with download managers like IDM, wget, or curl."
         })
         
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"success": False, "error": str(e)}), 500
 
-@app.route('/health', methods=['GET'])
+@app.route('/api/health', methods=['GET'])
 def health():
+    """Health check endpoint"""
     return jsonify({
         "status": "healthy",
+        "service": "YouTube Real Downloader",
+        "version": "2.0",
         "timestamp": time.time(),
-        "service": "YouTube Tokenized URL Generator",
-        "tokens_generated": len([f for f in globals().get('generated_urls', [])])
+        "features": ["Direct downloads", "Streaming", "All qualities", "Audio extraction"]
     })
+
+@app.route('/api/test-download/<video_id>', methods=['GET'])
+def test_download(video_id):
+    """Test endpoint to verify download works"""
+    try:
+        # Try to get video info
+        video_info = YouTubeRealDownloader.get_video_info(video_id)
+        
+        if not video_info:
+            return jsonify({"success": False, "error": "Video not found"}), 404
+        
+        # Try to get a stream URL
+        stream_info = YouTubeRealDownloader.get_real_stream_url(video_id, '18')  # 360p
+        
+        return jsonify({
+            "success": True,
+            "video_id": video_id,
+            "title": video_info.get('title', ''),
+            "has_formats": len(video_info.get('formats', [])) > 0,
+            "formats_count": len(video_info.get('formats', [])),
+            "can_download": bool(stream_info and stream_info.get('url')),
+            "sample_url_available": bool(stream_info),
+            "url_length": len(stream_info['url']) if stream_info and 'url' in stream_info else 0,
+            "is_googlevideo": 'googlevideo.com' in stream_info['url'] if stream_info and 'url' in stream_info else False
+        })
+        
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+# Error handlers
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"error": "Endpoint not found"}), 404
+
+@app.errorhandler(500)
+def server_error(e):
+    return jsonify({"error": "Internal server error"}), 500
+
+@app.errorhandler(400)
+def bad_request(e):
+    return jsonify({"error": "Bad request"}), 400
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 YouTube Tokenized URL Generator starting on port {port}")
-    print(f"📝 Home page: http://localhost:{port}")
-    print(f"🔧 Generate URLs: http://localhost:{port}/api/generate-tokenized-urls?url=YOUTUBE_URL")
+    print(f"🚀 YouTube Real Downloader starting on port {port}")
+    print(f"🌐 Web Interface: http://localhost:{port}")
+    print(f"🔧 API Test: http://localhost:{port}/api/test-download/dQw4w9WgXcQ")
+    print(f"✅ Using yt-dlp for reliable downloads")
     app.run(host='0.0.0.0', port=port, debug=False)
